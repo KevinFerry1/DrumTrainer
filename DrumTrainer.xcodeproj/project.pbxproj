@@ -1,0 +1,230 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* DrumTrainerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* DrumTrainerApp.swift */; };
+		A10000000000000000000002 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* AppState.swift */; };
+		A10000000000000000000003 /* DrumVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* DrumVoice.swift */; };
+		A10000000000000000000004 /* EventSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* EventSource.swift */; };
+		A10000000000000000000005 /* EventMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* EventMetadata.swift */; };
+		A10000000000000000000006 /* PerformanceEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* PerformanceEvent.swift */; };
+		A10000000000000000000007 /* ClockProviding.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* ClockProviding.swift */; };
+		A10000000000000000000008 /* HostTimeConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000008 /* HostTimeConverter.swift */; };
+		A10000000000000000000009 /* SessionTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* SessionTimeline.swift */; };
+		A1000000000000000000000A /* BoundedEventBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000A /* BoundedEventBuffer.swift */; };
+		A1000000000000000000000B /* MIDINoteMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000B /* MIDINoteMapper.swift */; };
+		A1000000000000000000000C /* KickTransientDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000C /* KickTransientDetector.swift */; };
+		A1000000000000000000000D /* LiveMonitorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000D /* LiveMonitorView.swift */; };
+		A1000000000000000000000E /* MIDIInputService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000E /* MIDIInputService.swift */; };
+		A1000000000000000000000F /* AudioInputService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000F /* AudioInputService.swift */; };
+		A10000000000000000000010 /* MetronomeEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* MetronomeEngine.swift */; };
+		A10000000000000000000011 /* PracticeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* PracticeModels.swift */; };
+		A10000000000000000000012 /* KickPatternGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* KickPatternGenerator.swift */; };
+		A10000000000000000000013 /* EventMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* EventMatcher.swift */; };
+		A10000000000000000000014 /* ScoringMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* ScoringMetrics.swift */; };
+		A10000000000000000000015 /* PracticeSessionRecording.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* PracticeSessionRecording.swift */; };
+		A10000000000000000000016 /* PracticeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* PracticeView.swift */; };
+		A10000000000000000000017 /* MicrophoneCalibration.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* MicrophoneCalibration.swift */; };
+		A10000000000000000000018 /* CalibrationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* CalibrationView.swift */; };
+		A10000000000000000000019 /* PracticeScoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* PracticeScoreView.swift */; };
+		A1000000000000000000001A /* MicrophoneCrosstalkGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* MicrophoneCrosstalkGuard.swift */; };
+		A1000000000000000000001B /* KickSoundClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001B /* KickSoundClassifier.swift */; };
+		A1000000000000000000001C /* ImportedSong.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001C /* ImportedSong.swift */; };
+		A1000000000000000000001D /* StandardMIDIFileParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* StandardMIDIFileParser.swift */; };
+		A1000000000000000000001E /* ImportedSongPatternGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001E /* ImportedSongPatternGenerator.swift */; };
+		A1000000000000000000001F /* TimingAlignmentCalibration.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001F /* TimingAlignmentCalibration.swift */; };
+		A20000000000000000000001 /* HostTimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* HostTimeTests.swift */; };
+		A20000000000000000000002 /* MIDINoteMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* MIDINoteMapperTests.swift */; };
+		A20000000000000000000003 /* KickTransientDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* KickTransientDetectorTests.swift */; };
+		A20000000000000000000004 /* EventOrderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* EventOrderingTests.swift */; };
+		A20000000000000000000005 /* MIDI1UMPParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* MIDI1UMPParserTests.swift */; };
+		A20000000000000000000006 /* MetronomeTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* MetronomeTimelineTests.swift */; };
+		A20000000000000000000007 /* KickPatternGeneratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* KickPatternGeneratorTests.swift */; };
+		A20000000000000000000008 /* EventMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* EventMatcherTests.swift */; };
+		A20000000000000000000009 /* ScoringMetricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* ScoringMetricsTests.swift */; };
+		A2000000000000000000000A /* PracticeSessionRecordingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* PracticeSessionRecordingTests.swift */; };
+		A2000000000000000000000B /* MicrophoneCalibrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000B /* MicrophoneCalibrationTests.swift */; };
+		A2000000000000000000000C /* MicrophoneCrosstalkGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000C /* MicrophoneCrosstalkGuardTests.swift */; };
+		A2000000000000000000000D /* StandardMIDIImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000D /* StandardMIDIImportTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C00000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E00000000000000000000001;
+			remoteInfo = DrumTrainer;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		B10000000000000000000001 /* DrumTrainerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrumTrainerApp.swift; sourceTree = "<group>"; };
+		B10000000000000000000002 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 /* DrumVoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrumVoice.swift; sourceTree = "<group>"; };
+		B10000000000000000000004 /* EventSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventSource.swift; sourceTree = "<group>"; };
+		B10000000000000000000005 /* EventMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventMetadata.swift; sourceTree = "<group>"; };
+		B10000000000000000000006 /* PerformanceEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceEvent.swift; sourceTree = "<group>"; };
+		B10000000000000000000007 /* ClockProviding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClockProviding.swift; sourceTree = "<group>"; };
+		B10000000000000000000008 /* HostTimeConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostTimeConverter.swift; sourceTree = "<group>"; };
+		B10000000000000000000009 /* SessionTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionTimeline.swift; sourceTree = "<group>"; };
+		B1000000000000000000000A /* BoundedEventBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoundedEventBuffer.swift; sourceTree = "<group>"; };
+		B1000000000000000000000B /* MIDINoteMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MIDINoteMapper.swift; sourceTree = "<group>"; };
+		B1000000000000000000000C /* KickTransientDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KickTransientDetector.swift; sourceTree = "<group>"; };
+		B1000000000000000000000D /* LiveMonitorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMonitorView.swift; sourceTree = "<group>"; };
+		B1000000000000000000000E /* MIDIInputService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MIDIInputService.swift; sourceTree = "<group>"; };
+		B1000000000000000000000F /* AudioInputService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioInputService.swift; sourceTree = "<group>"; };
+		B10000000000000000000010 /* MetronomeEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetronomeEngine.swift; sourceTree = "<group>"; };
+		B10000000000000000000011 /* PracticeModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PracticeModels.swift; sourceTree = "<group>"; };
+		B10000000000000000000012 /* KickPatternGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KickPatternGenerator.swift; sourceTree = "<group>"; };
+		B10000000000000000000013 /* EventMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventMatcher.swift; sourceTree = "<group>"; };
+		B10000000000000000000014 /* ScoringMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoringMetrics.swift; sourceTree = "<group>"; };
+		B10000000000000000000015 /* PracticeSessionRecording.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PracticeSessionRecording.swift; sourceTree = "<group>"; };
+		B10000000000000000000016 /* PracticeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PracticeView.swift; sourceTree = "<group>"; };
+		B10000000000000000000017 /* MicrophoneCalibration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneCalibration.swift; sourceTree = "<group>"; };
+		B10000000000000000000018 /* CalibrationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalibrationView.swift; sourceTree = "<group>"; };
+		B10000000000000000000019 /* PracticeScoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PracticeScoreView.swift; sourceTree = "<group>"; };
+		B1000000000000000000001A /* MicrophoneCrosstalkGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneCrosstalkGuard.swift; sourceTree = "<group>"; };
+		B1000000000000000000001B /* KickSoundClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KickSoundClassifier.swift; sourceTree = "<group>"; };
+		B1000000000000000000001C /* ImportedSong.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportedSong.swift; sourceTree = "<group>"; };
+		B1000000000000000000001D /* StandardMIDIFileParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandardMIDIFileParser.swift; sourceTree = "<group>"; };
+		B1000000000000000000001E /* ImportedSongPatternGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportedSongPatternGenerator.swift; sourceTree = "<group>"; };
+		B1000000000000000000001F /* TimingAlignmentCalibration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimingAlignmentCalibration.swift; sourceTree = "<group>"; };
+		B20000000000000000000001 /* HostTimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostTimeTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* MIDINoteMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MIDINoteMapperTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* KickTransientDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KickTransientDetectorTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000004 /* EventOrderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventOrderingTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000005 /* MIDI1UMPParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MIDI1UMPParserTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000006 /* MetronomeTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetronomeTimelineTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000007 /* KickPatternGeneratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KickPatternGeneratorTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000008 /* EventMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventMatcherTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000009 /* ScoringMetricsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoringMetricsTests.swift; sourceTree = "<group>"; };
+		B2000000000000000000000A /* PracticeSessionRecordingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PracticeSessionRecordingTests.swift; sourceTree = "<group>"; };
+		B2000000000000000000000B /* MicrophoneCalibrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneCalibrationTests.swift; sourceTree = "<group>"; };
+		B2000000000000000000000C /* MicrophoneCrosstalkGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneCrosstalkGuardTests.swift; sourceTree = "<group>"; };
+		B2000000000000000000000D /* StandardMIDIImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandardMIDIImportTests.swift; sourceTree = "<group>"; };
+		B30000000000000000000001 /* DrumTrainer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DrumTrainer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B30000000000000000000002 /* DrumTrainerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DrumTrainerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		F10000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		F20000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		D10000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				D10000000000000000000002 /* DrumTrainer */,
+				D1000000000000000000000C /* DrumTrainerTests */,
+				D1000000000000000000000D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D10000000000000000000002 /* DrumTrainer */ = {isa = PBXGroup; children = (D10000000000000000000003 /* App */, D10000000000000000000004 /* Domain */, D10000000000000000000006 /* Services */, D1000000000000000000000B /* Features */); path = DrumTrainer; sourceTree = "<group>"; };
+		D10000000000000000000003 /* App */ = {isa = PBXGroup; children = (B10000000000000000000001 /* DrumTrainerApp.swift */, B10000000000000000000002 /* AppState.swift */); path = App; sourceTree = "<group>"; };
+		D10000000000000000000004 /* Domain */ = {isa = PBXGroup; children = (D10000000000000000000005 /* Models */, D10000000000000000000010 /* Patterns */, D10000000000000000000011 /* Scoring */); path = Domain; sourceTree = "<group>"; };
+		D10000000000000000000005 /* Models */ = {isa = PBXGroup; children = (B10000000000000000000003 /* DrumVoice.swift */, B10000000000000000000004 /* EventSource.swift */, B10000000000000000000005 /* EventMetadata.swift */, B10000000000000000000006 /* PerformanceEvent.swift */, B10000000000000000000011 /* PracticeModels.swift */, B1000000000000000000001C /* ImportedSong.swift */); path = Models; sourceTree = "<group>"; };
+		D10000000000000000000010 /* Patterns */ = {isa = PBXGroup; children = (B10000000000000000000012 /* KickPatternGenerator.swift */, B1000000000000000000001E /* ImportedSongPatternGenerator.swift */); path = Patterns; sourceTree = "<group>"; };
+		D10000000000000000000011 /* Scoring */ = {isa = PBXGroup; children = (B10000000000000000000013 /* EventMatcher.swift */, B10000000000000000000014 /* ScoringMetrics.swift */, B10000000000000000000015 /* PracticeSessionRecording.swift */); path = Scoring; sourceTree = "<group>"; };
+		D10000000000000000000006 /* Services */ = {isa = PBXGroup; children = (D10000000000000000000007 /* Timing */, D10000000000000000000008 /* EventStreaming */, D10000000000000000000009 /* MIDI */, D1000000000000000000000A /* Audio */, D1000000000000000000000F /* Metronome */, D10000000000000000000013 /* Calibration */); path = Services; sourceTree = "<group>"; };
+		D10000000000000000000007 /* Timing */ = {isa = PBXGroup; children = (B10000000000000000000007 /* ClockProviding.swift */, B10000000000000000000008 /* HostTimeConverter.swift */, B10000000000000000000009 /* SessionTimeline.swift */); path = Timing; sourceTree = "<group>"; };
+		D10000000000000000000008 /* EventStreaming */ = {isa = PBXGroup; children = (B1000000000000000000000A /* BoundedEventBuffer.swift */); path = EventStreaming; sourceTree = "<group>"; };
+		D10000000000000000000009 /* MIDI */ = {isa = PBXGroup; children = (B1000000000000000000000B /* MIDINoteMapper.swift */, B1000000000000000000000E /* MIDIInputService.swift */, B1000000000000000000001D /* StandardMIDIFileParser.swift */); path = MIDI; sourceTree = "<group>"; };
+		D1000000000000000000000A /* Audio */ = {isa = PBXGroup; children = (B1000000000000000000000C /* KickTransientDetector.swift */, B1000000000000000000001B /* KickSoundClassifier.swift */, B1000000000000000000000F /* AudioInputService.swift */, B1000000000000000000001A /* MicrophoneCrosstalkGuard.swift */); path = Audio; sourceTree = "<group>"; };
+		D1000000000000000000000F /* Metronome */ = {isa = PBXGroup; children = (B10000000000000000000010 /* MetronomeEngine.swift */); path = Metronome; sourceTree = "<group>"; };
+		D10000000000000000000013 /* Calibration */ = {isa = PBXGroup; children = (B10000000000000000000017 /* MicrophoneCalibration.swift */, B1000000000000000000001F /* TimingAlignmentCalibration.swift */); path = Calibration; sourceTree = "<group>"; };
+		D1000000000000000000000B /* Features */ = {isa = PBXGroup; children = (D1000000000000000000000E /* LiveMonitor */, D10000000000000000000014 /* Calibration */, D10000000000000000000012 /* Practice */); path = Features; sourceTree = "<group>"; };
+		D1000000000000000000000E /* LiveMonitor */ = {isa = PBXGroup; children = (B1000000000000000000000D /* LiveMonitorView.swift */); path = LiveMonitor; sourceTree = "<group>"; };
+		D10000000000000000000012 /* Practice */ = {isa = PBXGroup; children = (B10000000000000000000016 /* PracticeView.swift */, B10000000000000000000019 /* PracticeScoreView.swift */); path = Practice; sourceTree = "<group>"; };
+		D10000000000000000000014 /* Calibration */ = {isa = PBXGroup; children = (B10000000000000000000018 /* CalibrationView.swift */); path = Calibration; sourceTree = "<group>"; };
+		D1000000000000000000000C /* DrumTrainerTests */ = {isa = PBXGroup; children = (B20000000000000000000001 /* HostTimeTests.swift */, B20000000000000000000002 /* MIDINoteMapperTests.swift */, B20000000000000000000003 /* KickTransientDetectorTests.swift */, B20000000000000000000004 /* EventOrderingTests.swift */, B20000000000000000000005 /* MIDI1UMPParserTests.swift */, B20000000000000000000006 /* MetronomeTimelineTests.swift */, B20000000000000000000007 /* KickPatternGeneratorTests.swift */, B20000000000000000000008 /* EventMatcherTests.swift */, B20000000000000000000009 /* ScoringMetricsTests.swift */, B2000000000000000000000A /* PracticeSessionRecordingTests.swift */, B2000000000000000000000B /* MicrophoneCalibrationTests.swift */, B2000000000000000000000C /* MicrophoneCrosstalkGuardTests.swift */, B2000000000000000000000D /* StandardMIDIImportTests.swift */); path = DrumTrainerTests; sourceTree = "<group>"; };
+		D1000000000000000000000D /* Products */ = {isa = PBXGroup; children = (B30000000000000000000001 /* DrumTrainer.app */, B30000000000000000000002 /* DrumTrainerTests.xctest */); name = Products; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E00000000000000000000001 /* DrumTrainer */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E10000000000000000000001 /* Build configuration list for PBXNativeTarget "DrumTrainer" */;
+			buildPhases = (F30000000000000000000001 /* Sources */, F10000000000000000000001 /* Frameworks */, F40000000000000000000001 /* Resources */);
+			buildRules = ();
+			dependencies = ();
+			name = DrumTrainer;
+			productName = DrumTrainer;
+			productReference = B30000000000000000000001 /* DrumTrainer.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E00000000000000000000002 /* DrumTrainerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E10000000000000000000002 /* Build configuration list for PBXNativeTarget "DrumTrainerTests" */;
+			buildPhases = (F30000000000000000000002 /* Sources */, F20000000000000000000001 /* Frameworks */, F40000000000000000000002 /* Resources */);
+			buildRules = ();
+			dependencies = (C10000000000000000000001 /* PBXTargetDependency */);
+			name = DrumTrainerTests;
+			productName = DrumTrainerTests;
+			productReference = B30000000000000000000002 /* DrumTrainerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		D00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2630;
+				LastUpgradeCheck = 2630;
+				TargetAttributes = {
+					E00000000000000000000001 = {CreatedOnToolsVersion = 26.3; };
+					E00000000000000000000002 = {CreatedOnToolsVersion = 26.3; TestTargetID = E00000000000000000000001; };
+				};
+			};
+			buildConfigurationList = E10000000000000000000003 /* Build configuration list for PBXProject "DrumTrainer" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base);
+			mainGroup = D10000000000000000000001;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D1000000000000000000000D /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (E00000000000000000000001 /* DrumTrainer */, E00000000000000000000002 /* DrumTrainerTests */);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F40000000000000000000001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		F40000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		F30000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000001, A10000000000000000000002, A10000000000000000000003, A10000000000000000000004, A10000000000000000000005, A10000000000000000000006, A10000000000000000000007, A10000000000000000000008, A10000000000000000000009, A1000000000000000000000A, A1000000000000000000000B, A1000000000000000000000C, A1000000000000000000000D, A1000000000000000000000E, A1000000000000000000000F, A10000000000000000000010, A10000000000000000000011, A10000000000000000000012, A10000000000000000000013, A10000000000000000000014, A10000000000000000000015, A10000000000000000000016, A10000000000000000000017, A10000000000000000000018, A10000000000000000000019, A1000000000000000000001A, A1000000000000000000001B, A1000000000000000000001C, A1000000000000000000001D, A1000000000000000000001E, A1000000000000000000001F); runOnlyForDeploymentPostprocessing = 0; };
+		F30000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A20000000000000000000001, A20000000000000000000002, A20000000000000000000003, A20000000000000000000004, A20000000000000000000005, A20000000000000000000006, A20000000000000000000007, A20000000000000000000008, A20000000000000000000009, A2000000000000000000000A, A2000000000000000000000B, A2000000000000000000000C, A2000000000000000000000D); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C10000000000000000000001 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = E00000000000000000000001 /* DrumTrainer */; targetProxy = C00000000000000000000001 /* PBXContainerItemProxy */; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		E20000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; COMBINE_HIDPI_IMAGES = YES; CURRENT_PROJECT_VERSION = 1; ENABLE_HARDENED_RUNTIME = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music"; INFOPLIST_KEY_NSMicrophoneUsageDescription = "DrumTrainer uses microphone input to detect local kick-pad impacts. Audio is not stored."; MACOSX_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.DrumTrainer; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_STRICT_CONCURRENCY = complete; SWIFT_VERSION = 6.0; }; name = Debug; };
+		E20000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; COMBINE_HIDPI_IMAGES = YES; CURRENT_PROJECT_VERSION = 1; ENABLE_HARDENED_RUNTIME = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music"; INFOPLIST_KEY_NSMicrophoneUsageDescription = "DrumTrainer uses microphone input to detect local kick-pad impacts. Audio is not stored."; MACOSX_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.DrumTrainer; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_STRICT_CONCURRENCY = complete; SWIFT_VERSION = 6.0; }; name = Release; };
+		E20000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 15.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.DrumTrainerTests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_STRICT_CONCURRENCY = complete; SWIFT_VERSION = 6.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DrumTrainer.app/Contents/MacOS/DrumTrainer"; }; name = Debug; };
+		E20000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 15.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.DrumTrainerTests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_STRICT_CONCURRENCY = complete; SWIFT_VERSION = 6.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DrumTrainer.app/Contents/MacOS/DrumTrainer"; }; name = Release; };
+		E20000000000000000000005 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ANALYZER_NONNULL = YES; CLANG_CXX_LANGUAGE_STANDARD = "gnu++20"; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; CLANG_WARN_BOOL_CONVERSION = YES; CLANG_WARN_COMMA = YES; CLANG_WARN_CONSTANT_CONVERSION = YES; CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES; CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR; CLANG_WARN_DOCUMENTATION_COMMENTS = YES; CLANG_WARN_EMPTY_BODY = YES; CLANG_WARN_ENUM_CONVERSION = YES; CLANG_WARN_INFINITE_RECURSION = YES; CLANG_WARN_INT_CONVERSION = YES; CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES; CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES; CLANG_WARN_OBJC_LITERAL_CONVERSION = YES; CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES; CLANG_WARN_RANGE_LOOP_ANALYSIS = YES; CLANG_WARN_STRICT_PROTOTYPES = YES; CLANG_WARN_SUSPICIOUS_MOVE = YES; CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE; CLANG_WARN_UNREACHABLE_CODE = YES; COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_C_LANGUAGE_STANDARD = gnu17; GCC_NO_COMMON_BLOCKS = YES; GCC_OPTIMIZATION_LEVEL = 0; GCC_PREPROCESSOR_DEFINITIONS = ("DEBUG=1", "$(inherited)"); GCC_WARN_64_TO_32_BIT_CONVERSION = YES; GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR; GCC_WARN_UNDECLARED_SELECTOR = YES; GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE; GCC_WARN_UNUSED_FUNCTION = YES; GCC_WARN_UNUSED_VARIABLE = YES; MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE; MTL_FAST_MATH = YES; ONLY_ACTIVE_ARCH = YES; SDKROOT = macosx; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; }; name = Debug; };
+		E20000000000000000000006 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ANALYZER_NONNULL = YES; CLANG_CXX_LANGUAGE_STANDARD = "gnu++20"; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; CLANG_WARN_BOOL_CONVERSION = YES; CLANG_WARN_COMMA = YES; CLANG_WARN_CONSTANT_CONVERSION = YES; CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES; CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR; CLANG_WARN_DOCUMENTATION_COMMENTS = YES; CLANG_WARN_EMPTY_BODY = YES; CLANG_WARN_ENUM_CONVERSION = YES; CLANG_WARN_INFINITE_RECURSION = YES; CLANG_WARN_INT_CONVERSION = YES; CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES; CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES; CLANG_WARN_OBJC_LITERAL_CONVERSION = YES; CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES; CLANG_WARN_RANGE_LOOP_ANALYSIS = YES; CLANG_WARN_STRICT_PROTOTYPES = YES; CLANG_WARN_SUSPICIOUS_MOVE = YES; CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE; CLANG_WARN_UNREACHABLE_CODE = YES; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; ENABLE_NS_ASSERTIONS = NO; GCC_C_LANGUAGE_STANDARD = gnu17; GCC_NO_COMMON_BLOCKS = YES; GCC_WARN_64_TO_32_BIT_CONVERSION = YES; GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR; GCC_WARN_UNDECLARED_SELECTOR = YES; GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE; GCC_WARN_UNUSED_FUNCTION = YES; GCC_WARN_UNUSED_VARIABLE = YES; MTL_ENABLE_DEBUG_INFO = NO; MTL_FAST_MATH = YES; SDKROOT = macosx; SWIFT_COMPILATION_MODE = wholemodule; }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		E10000000000000000000001 /* Build configuration list for PBXNativeTarget "DrumTrainer" */ = {isa = XCConfigurationList; buildConfigurations = (E20000000000000000000001 /* Debug */, E20000000000000000000002 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		E10000000000000000000002 /* Build configuration list for PBXNativeTarget "DrumTrainerTests" */ = {isa = XCConfigurationList; buildConfigurations = (E20000000000000000000003 /* Debug */, E20000000000000000000004 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		E10000000000000000000003 /* Build configuration list for PBXProject "DrumTrainer" */ = {isa = XCConfigurationList; buildConfigurations = (E20000000000000000000005 /* Debug */, E20000000000000000000006 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = D00000000000000000000001 /* Project object */;
+}
