@@ -61,6 +61,7 @@ final class AudioInputService: @unchecked Sendable {
     private let onStatusChanged: StatusHandler
     private let onLevel: LevelHandler
     private let onKick: KickHandler
+    private let practiceAudioRecorder: PracticeAudioRecorder
 
     private let engine = AVAudioEngine()
     private let captureQueue = DispatchQueue(label: "DrumTrainer.AudioInputCapture")
@@ -80,7 +81,8 @@ final class AudioInputService: @unchecked Sendable {
         onPermissionChanged: @escaping PermissionHandler,
         onStatusChanged: @escaping StatusHandler,
         onLevel: @escaping LevelHandler,
-        onKick: @escaping KickHandler
+        onKick: @escaping KickHandler,
+        practiceAudioRecorder: PracticeAudioRecorder = PracticeAudioRecorder()
     ) {
         self.timeline = timeline
         self.detector = KickTransientDetector(configuration: configuration)
@@ -89,6 +91,7 @@ final class AudioInputService: @unchecked Sendable {
         self.onStatusChanged = onStatusChanged
         self.onLevel = onLevel
         self.onKick = onKick
+        self.practiceAudioRecorder = practiceAudioRecorder
     }
 
     deinit {
@@ -227,7 +230,7 @@ final class AudioInputService: @unchecked Sendable {
         stateLock.unlock()
 
         inputNode.installTap(onBus: 0, bufferSize: 512, format: format) { [weak self] buffer, time in
-            self?.process(buffer: buffer, time: time)
+            self?.process(buffer: buffer, time: time, sourceDeviceID: deviceID)
         }
         isTapInstalled = true
         engine.prepare()
@@ -244,10 +247,16 @@ final class AudioInputService: @unchecked Sendable {
         engine.reset()
     }
 
-    private func process(buffer: AVAudioPCMBuffer, time: AVAudioTime) {
+    private func process(
+        buffer: AVAudioPCMBuffer,
+        time: AVAudioTime,
+        sourceDeviceID: AudioDeviceID
+    ) {
         guard time.isHostTimeValid,
               let channels = buffer.floatChannelData,
               buffer.frameLength > 0 else { return }
+
+        practiceAudioRecorder.append(buffer, time: time, sourceDeviceID: sourceDeviceID)
 
         stateLock.lock()
         let output = detector.processPCM(

@@ -22,10 +22,23 @@ struct TimingAlignmentProfile: Identifiable, Codable, Equatable, Sendable {
     let sampleCount: Int
     let createdAt: Date
 
-    var key: String { Self.key(source: source, inputID: inputID, outputUID: outputUID) }
+    /// MIDI alignment is intentionally device-wide. `.unknown` is persisted as the
+    /// shared MIDI scope so older per-voice profiles remain decodable but are ignored.
+    var scopeDisplayName: String {
+        source == .midi ? "All e-kit MIDI drums" : voice.displayName
+    }
 
-    static func key(source: TimingAlignmentSource, inputID: String, outputUID: String) -> String {
-        "\(source.rawValue)|\(inputID)|\(outputUID)"
+    var key: String {
+        Self.key(source: source, inputID: inputID, outputUID: outputUID, voice: voice)
+    }
+
+    static func key(
+        source: TimingAlignmentSource,
+        inputID: String,
+        outputUID: String,
+        voice: DrumVoice
+    ) -> String {
+        "\(source.rawValue)|\(inputID)|\(outputUID)|\(voice.rawValue)"
     }
 }
 
@@ -93,7 +106,7 @@ struct TimingAlignmentMeasurement: Equatable, Sendable {
 
 struct TimingAlignmentCollector: Sendable {
     let source: EventSource
-    let voice: DrumVoice
+    let voice: DrumVoice?
     private(set) var referenceTimes: [Int64] = []
     private(set) var events: [PerformanceEvent] = []
 
@@ -102,7 +115,9 @@ struct TimingAlignmentCollector: Sendable {
     }
 
     mutating func record(_ event: PerformanceEvent) {
-        guard event.source == source, event.voice == voice else { return }
+        guard event.source == source else { return }
+        if let voice, event.voice != voice { return }
+        guard event.voice != .unknown, event.voice != .metronome else { return }
         events.append(event)
     }
 

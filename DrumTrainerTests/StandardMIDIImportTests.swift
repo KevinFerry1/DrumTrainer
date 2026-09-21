@@ -57,12 +57,42 @@ final class StandardMIDIImportTests: XCTestCase {
         XCTAssertEqual(pattern.referenceBeats?.map(\.isAccent), [true, false, false, false, true, false, false, false])
     }
 
-    func testImportedSongPersistsInSchemaFourArchive() throws {
+    func testFindsFirstScorableMeasureAndCountsOnlyTheSelectedSection() {
+        let song = ImportedSong(
+            name: "Long intro",
+            sourceFilename: "Long intro.mid",
+            format: 1,
+            ticksPerQuarterNote: 480,
+            tempoChanges: [MIDITempoChange(tick: 0, microsecondsPerQuarterNote: 500_000)],
+            timeSignatureChanges: [MIDITimeSignatureChange(tick: 0, numerator: 4, denominator: 4)],
+            tracks: [ImportedMIDITrack(index: 0, name: "Drums", notes: [
+                ImportedMIDINoteEvent(tick: 1_920, noteNumber: 36, velocity: 100, channel: 9),
+                ImportedMIDINoteEvent(tick: 7_680, noteNumber: 38, velocity: 100, channel: 9),
+                ImportedMIDINoteEvent(tick: 7_920, noteNumber: 42, velocity: 90, channel: 9)
+            ])],
+            selectedTrackIndex: 0,
+            noteMappings: [
+                ImportedMIDINoteMapping(noteNumber: 36, voice: .kick),
+                ImportedMIDINoteMapping(noteNumber: 38, voice: .snare),
+                ImportedMIDINoteMapping(noteNumber: 42, voice: .closedHiHat)
+            ]
+        )
+
+        XCTAssertEqual(song.firstMeasureWithScorableNote(), 2)
+        XCTAssertEqual(song.firstMeasureWithScorableNote(includeKicks: false), 5)
+        XCTAssertEqual(song.scorableNoteCount(fromMeasure: 1, throughMeasure: 1), 0)
+        XCTAssertEqual(song.scorableNoteCount(fromMeasure: 2, throughMeasure: 2), 1)
+        XCTAssertEqual(song.scorableNoteCount(fromMeasure: 2, throughMeasure: 2, includeKicks: false), 0)
+        XCTAssertEqual(song.scorableNoteCount(fromMeasure: 5, throughMeasure: 5, includeKicks: false), 2)
+        XCTAssertEqual(song.scorableNoteCount(fromMeasure: 0, throughMeasure: 5), 0)
+    }
+
+    func testImportedSongPersistsInCurrentSchemaArchive() throws {
         let song = try StandardMIDIFileParser().parse(data: makeMIDI(), filename: "Niche Song.mid")
         let data = try PracticeDataArchive(importedSongs: [song]).encodedJSON()
         let decoded = try PracticeDataArchive.decodeAndValidate(data)
 
-        XCTAssertEqual(decoded.schemaVersion, 4)
+        XCTAssertEqual(decoded.schemaVersion, PracticeDataArchive.currentSchemaVersion)
         XCTAssertEqual(decoded.importedSongs, [song])
     }
 

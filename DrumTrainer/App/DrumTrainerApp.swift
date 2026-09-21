@@ -299,6 +299,11 @@ private struct HistoryView: View {
                         } else {
                             Text("Needs work").font(.caption).foregroundStyle(.secondary)
                         }
+                        if state.practiceAudioAsset(sessionID: session.id) != nil {
+                            Image(systemName: "waveform.badge.mic")
+                                .foregroundStyle(.tint)
+                                .help("This session has a saved audio recording")
+                        }
                         Spacer()
                         Button("Details") { selectedSession = session }
                             .buttonStyle(.bordered)
@@ -431,8 +436,10 @@ private struct PracticeSessionDetailView: View {
     @ObservedObject var state: AppState
     let sessionID: UUID
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var audioPlayer = PracticeAudioPlaybackController()
     @State private var notes = ""
     @State private var tagsText = ""
+    @State private var showsDeleteAudioConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -441,13 +448,14 @@ private struct PracticeSessionDetailView: View {
                     if let summary {
                         header(summary)
                         summaryCards(summary)
+                        sessionAudio
                     }
 
                     if let record {
                         evidence(record)
                         deviceContext(record.deviceContext)
                         metadataEditor(record)
-                        voiceBreakdown(record.summary)
+                        voiceBreakdown(record)
                         eventLedger(record)
                     } else {
                         ContentUnavailableView(
@@ -475,7 +483,19 @@ private struct PracticeSessionDetailView: View {
             }
         }
         .frame(minWidth: 780, minHeight: 680)
-        .onAppear { loadMetadata() }
+        .onAppear {
+            loadMetadata()
+        }
+        .onDisappear { audioPlayer.stop() }
+        .alert("Delete this practice recording?", isPresented: $showsDeleteAudioConfirmation) {
+            Button("Delete Recording", role: .destructive) {
+                audioPlayer.stop()
+                state.deletePracticeAudio(sessionID: sessionID)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The score and session history will remain, but the audio file cannot be recovered.")
+        }
     }
 
     private var record: PracticeSessionRecord? { state.practiceSessionRecord(id: sessionID) }
@@ -501,8 +521,91 @@ private struct PracticeSessionDetailView: View {
         HStack(spacing: 12) {
             detailCard("Recall", summary.recall.formatted(.percent.precision(.fractionLength(1))))
             detailCard("Precision", summary.precision.formatted(.percent.precision(.fractionLength(1))))
-            detailCard("Median error", summary.medianAbsoluteErrorMilliseconds.map { formatMilliseconds($0) } ?? "—")
+            detailCard(
+                summary.latencyAdjustedMedianErrorMilliseconds == nil ? "Median error" : "Groove error",
+                (summary.latencyAdjustedMedianErrorMilliseconds ?? summary.medianAbsoluteErrorMilliseconds)
+                    .map { formatMilliseconds($0) } ?? "—"
+            )
+            if let bias = summary.stableTimingBiasMilliseconds {
+                detailCard("Stable raw bias", formatSignedMilliseconds(bias))
+            }
             detailCard("Correct", "\(summary.correctCount)/\(summary.totalExpected)")
+            if let accents = summary.accentMetrics {
+                detailCard(
+                    "Accents",
+                    accents.accuracy.formatted(.percent.precision(.fractionLength(1)))
+                )
+            }
+            if let ghosts = summary.ghostMetrics {
+                detailCard("Ghost notes", ghosts.accuracy.formatted(.percent.precision(.fractionLength(1))))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sessionAudio: some View {
+        GroupBox("Practice audio") {
+            if let asset = state.practiceAudioAsset(sessionID: sessionID) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 12) {
+                        Button {
+                            if !audioPlayer.isReady { audioPlayer.load(url: asset.url) }
+                            audioPlayer.togglePlayback()
+                        } label: {
+                            Label(
+                                audioPlayer.isPlaying ? "Pause" : "Play Recording",
+                                systemImage: audioPlayer.isPlaying ? "pause.fill" : "play.fill"
+                            )
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Slider(
+                            value: Binding(
+                                get: { audioPlayer.currentTime },
+                                set: { audioPlayer.seek(to: $0) }
+                            ),
+                            in: 0...max(audioPlayer.duration, 0.01)
+                        )
+                        .disabled(!audioPlayer.isReady)
+
+                        Text("\(formatAudioTime(audioPlayer.currentTime)) / \(formatAudioTime(audioPlayer.duration))")
+                            .font(.callout.monospacedDigit())
+                            .frame(width: 108, alignment: .trailing)
+
+                        Button("Delete Recording", role: .destructive) {
+                            showsDeleteAudioConfirmation = true
+                        }
+                    }
+
+                    HStack {
+                        Label(
+                            ByteCountFormatter.string(fromByteCount: asset.fileSizeBytes, countStyle: .file),
+                            systemImage: "internaldrive"
+                        )
+                        Text("Selected practice-input recording · stored only on this Mac")
+                        Spacer()
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    if let error = audioPlayer.errorMessage {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .padding(.vertical, 6)
+                .task(id: asset.url) {
+                    audioPlayer.load(url: asset.url)
+                }
+            } else {
+                ContentUnavailableView(
+                    "No recording for this session",
+                    systemImage: "waveform.badge.mic",
+                    description: Text("Enable Save played audio in Practice setup before starting a new exercise.")
+                )
+                .frame(minHeight: 110)
+            }
         }
     }
 
@@ -512,6 +615,21 @@ private struct PracticeSessionDetailView: View {
                 Label("\(record.pattern.expectedEvents.count) expected", systemImage: "music.note.list")
                 Label("\(record.actualEvents.count) played", systemImage: "waveform")
                 Label("\(record.matchResults.count) match decisions", systemImage: "point.3.connected.trianglepath.dotted")
+                if !record.outcome.effectiveScoringConfiguration.gradeKicks {
+                    Label("Kicks ungraded", systemImage: "eye.slash")
+                        .foregroundStyle(.secondary)
+                }
+                if let accents = record.outcome.accentEvaluation?.metrics {
+                    Label(
+                        "\(accents.achievedCount)/\(accents.expectedCount) accents",
+                        systemImage: "greaterthan"
+                    )
+                    .foregroundStyle(accents.passesCleanThreshold ? Color.green : Color.orange)
+                }
+                if let ghosts = record.outcome.ghostEvaluation?.metrics {
+                    Text("\(ghosts.achievedCount)/\(ghosts.expectedCount) ghost notes")
+                        .foregroundStyle(ghosts.passesCleanThreshold ? Color.green : Color.orange)
+                }
                 if record.summary.droppedEventCount > 0 {
                     Label("\(record.summary.droppedEventCount) dropped", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -575,20 +693,34 @@ private struct PracticeSessionDetailView: View {
         }
     }
 
-    private func voiceBreakdown(_ summary: PracticeSessionSummary) -> some View {
-        GroupBox("Voice breakdown") {
+    private func voiceBreakdown(_ record: PracticeSessionRecord) -> some View {
+        let accentEvaluation = record.outcome.accentEvaluation
+        let ghostEvaluation = record.outcome.ghostEvaluation
+        return GroupBox("Voice breakdown") {
             Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 7) {
                 GridRow {
-                    Text("Voice"); Text("Correct"); Text("Recall"); Text("Precision"); Text("Median error")
+                    Text("Voice")
+                    Text("Correct")
+                    Text("Recall")
+                    Text("Precision")
+                    Text("Accent accuracy")
+                    Text("Ghost accuracy")
+                    Text("Median error")
                 }
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
-                ForEach(summary.voiceSummaries, id: \.voice) { voice in
+                ForEach(record.summary.voiceSummaries, id: \.voice) { voice in
                     GridRow {
                         Text(voice.voice.displayName).fontWeight(.semibold)
                         Text("\(voice.correctCount)/\(voice.totalExpected)")
                         Text(voice.recall.formatted(.percent.precision(.fractionLength(1))))
                         Text(voice.precision.formatted(.percent.precision(.fractionLength(1))))
+                        Text(accentEvaluation?.voiceAccuracy(for: voice.voice).map {
+                            $0.accuracy.formatted(.percent.precision(.fractionLength(1)))
+                        } ?? "—")
+                        Text(ghostEvaluation?.voiceAccuracy(for: voice.voice).map {
+                            $0.accuracy.formatted(.percent.precision(.fractionLength(1)))
+                        } ?? "—")
                         Text(voice.medianAbsoluteErrorMilliseconds.map { formatMilliseconds($0) } ?? "—")
                     }
                     .monospacedDigit()
@@ -644,6 +776,17 @@ private struct PracticeSessionDetailView: View {
 
     private func formatMilliseconds(_ value: Double) -> String {
         value.formatted(.number.precision(.fractionLength(1))) + " ms"
+    }
+
+    private func formatSignedMilliseconds(_ value: Double) -> String {
+        let prefix = value > 0 ? "+" : ""
+        return prefix + value.formatted(.number.precision(.fractionLength(1))) + " ms"
+    }
+
+    private func formatAudioTime(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let wholeSeconds = Int(seconds.rounded(.down))
+        return String(format: "%d:%02d", wholeSeconds / 60, wholeSeconds % 60)
     }
 
     private func loadMetadata() {

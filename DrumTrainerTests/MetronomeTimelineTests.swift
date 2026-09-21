@@ -2,6 +2,15 @@ import XCTest
 @testable import DrumTrainer
 
 final class MetronomeTimelineTests: XCTestCase {
+    func testMetronomeGainAllowsExtremeBoostAndClampsUnsafeValues() {
+        XCTAssertEqual(MetronomeGain.clamped(-100), -36)
+        XCTAssertEqual(MetronomeGain.clamped(12), 12)
+        XCTAssertEqual(MetronomeGain.clamped(24), 24)
+        XCTAssertEqual(MetronomeGain.clamped(100), 24)
+        XCTAssertFalse(MetronomeGain.isExtremeBoost(12))
+        XCTAssertTrue(MetronomeGain.isExtremeBoost(13))
+    }
+
     func testDigitalAmplitudeConvertsToDecibelsFS() {
         XCTAssertEqual(AudioLevelMeasurement.decibelsFS(forAmplitude: 1), 0, accuracy: 0.0001)
         XCTAssertEqual(
@@ -18,6 +27,35 @@ final class MetronomeTimelineTests: XCTestCase {
         XCTAssertTrue(MetronomeSound.allCases.allSatisfy {
             !$0.displayName.isEmpty && !$0.guidance.isEmpty
         })
+    }
+
+    func testEveryKickMonitorSoundHasUserFacingGuidance() {
+        XCTAssertEqual(KickMonitorSound.allCases.count, 4)
+        XCTAssertTrue(KickMonitorSound.allCases.allSatisfy {
+            !$0.displayName.isEmpty && !$0.guidance.isEmpty
+        })
+    }
+
+    func testKickMonitorSourceFiltersSyntheticAndUnselectedInputs() {
+        XCTAssertTrue(KickMonitorSource.both.accepts(.midi))
+        XCTAssertTrue(KickMonitorSource.both.accepts(.microphone))
+        XCTAssertFalse(KickMonitorSource.both.accepts(.simulation))
+        XCTAssertTrue(KickMonitorSource.midi.accepts(.midi))
+        XCTAssertFalse(KickMonitorSource.midi.accepts(.microphone))
+        XCTAssertTrue(KickMonitorSource.microphone.accepts(.microphone))
+        XCTAssertFalse(KickMonitorSource.microphone.accepts(.midi))
+    }
+
+    func testKickMonitorDynamicsPreserveAudibilityAndVelocityOrder() {
+        let quiet = KickMonitorDynamics.gain(for: 0, isVelocitySensitive: true)
+        let medium = KickMonitorDynamics.gain(for: 0.5, isVelocitySensitive: true)
+        let loud = KickMonitorDynamics.gain(for: 1, isVelocitySensitive: true)
+
+        XCTAssertGreaterThan(quiet, 0)
+        XCTAssertLessThan(quiet, medium)
+        XCTAssertLessThan(medium, loud)
+        XCTAssertEqual(loud, 1, accuracy: 0.0001)
+        XCTAssertEqual(KickMonitorDynamics.gain(for: 0.1, isVelocitySensitive: false), 1)
     }
 
     func testSchedulingHealthTracksMinimumLeadAndAtRiskTicks() {

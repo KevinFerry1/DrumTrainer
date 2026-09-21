@@ -1,11 +1,70 @@
 import Foundation
 
+struct PracticeScoringConfiguration: Codable, Equatable, Sendable {
+    var gradeKicks: Bool
+
+    init(gradeKicks: Bool = true) {
+        self.gradeKicks = gradeKicks
+    }
+
+    static let allVoices = PracticeScoringConfiguration()
+
+    func includes(_ voice: DrumVoice) -> Bool {
+        gradeKicks || voice != .kick
+    }
+}
+
 struct PracticeSessionOutcome: Codable, Equatable, Sendable {
     let pattern: PracticePattern
     let actualEvents: [PerformanceEvent]
     let matchResults: [MatchResult]
     let metrics: AggregateMetrics
     let droppedEventCount: Int
+    let scoringConfiguration: PracticeScoringConfiguration?
+
+    init(
+        pattern: PracticePattern,
+        actualEvents: [PerformanceEvent],
+        matchResults: [MatchResult],
+        metrics: AggregateMetrics,
+        droppedEventCount: Int,
+        scoringConfiguration: PracticeScoringConfiguration? = nil
+    ) {
+        self.pattern = pattern
+        self.actualEvents = actualEvents
+        self.matchResults = matchResults
+        self.metrics = metrics
+        self.droppedEventCount = droppedEventCount
+        self.scoringConfiguration = scoringConfiguration
+    }
+
+    var effectiveScoringConfiguration: PracticeScoringConfiguration {
+        scoringConfiguration ?? .allVoices
+    }
+
+    var accentEvaluation: AccentEvaluation? {
+        AccentEvaluator().evaluate(
+            expectedEvents: pattern.expectedEvents.filter {
+                effectiveScoringConfiguration.includes($0.voice)
+            },
+            actualEvents: actualEvents.filter {
+                effectiveScoringConfiguration.includes($0.voice)
+            },
+            matchResults: matchResults
+        )
+    }
+
+    var ghostEvaluation: GhostEvaluation? {
+        GhostEvaluator().evaluate(
+            expectedEvents: pattern.expectedEvents.filter {
+                effectiveScoringConfiguration.includes($0.voice)
+            },
+            actualEvents: actualEvents.filter {
+                effectiveScoringConfiguration.includes($0.voice)
+            },
+            matchResults: matchResults
+        )
+    }
 
     var timingTimeline: PracticeTimingTimeline {
         PracticeTimingTimeline(
@@ -13,6 +72,10 @@ struct PracticeSessionOutcome: Codable, Equatable, Sendable {
             actualEvents: actualEvents,
             matchResults: matchResults
         )
+    }
+
+    var stableTimingBiasEvaluation: StableTimingBiasEvaluation? {
+        StableTimingBiasEvaluator().evaluate(matchResults)
     }
 }
 
@@ -172,7 +235,7 @@ struct PracticeVoiceSummary: Codable, Equatable, Sendable {
 }
 
 struct PracticeSessionSummary: Identifiable, Codable, Equatable, Sendable {
-    static let scoringAlgorithmVersion = 1
+    static let scoringAlgorithmVersion = 5
 
     let id: UUID
     let completedAt: Date
@@ -197,10 +260,14 @@ struct PracticeSessionSummary: Identifiable, Codable, Equatable, Sendable {
     let meanSignedOffsetMilliseconds: Double?
     let medianAbsoluteErrorMilliseconds: Double?
     let timingStandardDeviationMilliseconds: Double?
+    let stableTimingBiasMilliseconds: Double?
+    let latencyAdjustedMedianErrorMilliseconds: Double?
     let longestCleanStreak: Int
     let medianLimbSpreadMilliseconds: Double?
     let droppedEventCount: Int
     let voiceSummaries: [PracticeVoiceSummary]
+    let accentMetrics: AccentMetrics?
+    let ghostMetrics: GhostMetrics?
     let scoringVersion: Int
 
     init(
@@ -235,10 +302,15 @@ struct PracticeSessionSummary: Identifiable, Codable, Equatable, Sendable {
         meanSignedOffsetMilliseconds = metrics.meanSignedOffsetMilliseconds
         medianAbsoluteErrorMilliseconds = metrics.medianAbsoluteErrorMilliseconds
         timingStandardDeviationMilliseconds = metrics.timingStandardDeviationMilliseconds
+        let stableTiming = outcome.stableTimingBiasEvaluation
+        stableTimingBiasMilliseconds = stableTiming?.biasMilliseconds
+        latencyAdjustedMedianErrorMilliseconds = stableTiming?.adjustedMedianAbsoluteErrorMilliseconds
         longestCleanStreak = metrics.longestCleanStreak
         medianLimbSpreadMilliseconds = metrics.limbSynchronization?.medianSpreadMilliseconds
         droppedEventCount = outcome.droppedEventCount
         voiceSummaries = metrics.perVoice.map(PracticeVoiceSummary.init(metrics:))
+        accentMetrics = outcome.accentEvaluation?.metrics
+        ghostMetrics = outcome.ghostEvaluation?.metrics
         scoringVersion = Self.scoringAlgorithmVersion
     }
 
@@ -246,7 +318,9 @@ struct PracticeSessionSummary: Identifiable, Codable, Equatable, Sendable {
         droppedEventCount == 0
             && totalExpected > 0
             && recall >= 0.95
-            && (medianAbsoluteErrorMilliseconds ?? .infinity) <= 25
+            && (latencyAdjustedMedianErrorMilliseconds ?? medianAbsoluteErrorMilliseconds ?? .infinity) <= 25
+            && (accentMetrics?.passesCleanThreshold ?? true)
+            && (ghostMetrics?.passesCleanThreshold ?? true)
     }
 }
 
@@ -291,6 +365,7 @@ struct PracticeSessionRecord: Identifiable, Codable, Equatable, Sendable {
     var matchResults: [MatchResult]
     var metrics: AggregateMetrics
     let deviceContext: PracticeSessionDeviceContext
+    let scoringConfiguration: PracticeScoringConfiguration?
     var notes: String
     var tags: [String]
 
@@ -309,6 +384,7 @@ struct PracticeSessionRecord: Identifiable, Codable, Equatable, Sendable {
         matchResults = outcome.matchResults
         metrics = outcome.metrics
         self.deviceContext = deviceContext
+        scoringConfiguration = outcome.scoringConfiguration
         self.notes = notes
         self.tags = Self.normalizedTags(tags)
     }
@@ -319,7 +395,8 @@ struct PracticeSessionRecord: Identifiable, Codable, Equatable, Sendable {
             actualEvents: actualEvents,
             matchResults: matchResults,
             metrics: metrics,
-            droppedEventCount: summary.droppedEventCount
+            droppedEventCount: summary.droppedEventCount,
+            scoringConfiguration: scoringConfiguration
         )
     }
 
@@ -332,18 +409,22 @@ struct PracticeSessionRecord: Identifiable, Codable, Equatable, Sendable {
         matcher: EventMatcher = EventMatcher(),
         metricsCalculator: ScoringMetricsCalculator = ScoringMetricsCalculator()
     ) {
-        matchResults = matcher.match(expected: pattern.expectedEvents, actual: actualEvents)
+        let configuration = scoringConfiguration ?? .allVoices
+        let scoredExpectedEvents = pattern.expectedEvents.filter { configuration.includes($0.voice) }
+        let scoredActualEvents = actualEvents.filter { configuration.includes($0.voice) }
+        matchResults = matcher.match(expected: scoredExpectedEvents, actual: scoredActualEvents)
         metrics = metricsCalculator.calculate(
             from: matchResults,
-            expectedEvents: pattern.expectedEvents,
-            actualEvents: actualEvents
+            expectedEvents: scoredExpectedEvents,
+            actualEvents: scoredActualEvents
         )
         let newOutcome = PracticeSessionOutcome(
             pattern: pattern,
             actualEvents: actualEvents,
             matchResults: matchResults,
             metrics: metrics,
-            droppedEventCount: summary.droppedEventCount
+            droppedEventCount: summary.droppedEventCount,
+            scoringConfiguration: scoringConfiguration
         )
         summary = PracticeSessionSummary(
             id: summary.id,
@@ -459,7 +540,7 @@ struct ExerciseCeilingRecord: Identifiable, Codable, Equatable, Sendable {
 }
 
 struct PracticeDataArchive: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 9
 
     var schemaVersion: Int
     var customExercises: [SavedCustomExercise]
@@ -547,6 +628,9 @@ struct PracticeDataArchive: Codable, Equatable, Sendable {
               ceilingRecords.count <= 2_000 else {
             throw PracticeDataPersistenceError.invalidArchive("The archive exceeds supported collection limits.")
         }
+        guard customExercises.allSatisfy({ $0.definition.sequenceValidationMessage == nil }) else {
+            throw PracticeDataPersistenceError.invalidArchive("A saved sequence is empty, invalid, or exceeds the supported measure/note limits.")
+        }
         guard importedSongs.allSatisfy({ song in
             song.ticksPerQuarterNote > 0
                 && song.tracks.count <= 256
@@ -576,12 +660,19 @@ struct PracticeDataArchive: Codable, Equatable, Sendable {
         }
         guard sessionRecords.allSatisfy({ record in
             record.pattern.expectedEvents.count <= 10_000
+                && record.pattern.expectedEvents.allSatisfy { event in
+                    (event.minimumAccentVelocity.map { $0 > 0 && $0 <= 1 } ?? true)
+                        && (event.minimumAccentContrast.map { $0 > 0 && $0 <= 1 } ?? true)
+                        && (event.maximumGhostVelocity.map { $0 > 0 && $0 <= 1 } ?? true)
+                        && (event.minimumGhostContrast.map { $0 > 0 && $0 <= 1 } ?? true)
+                        && !(event.isGhost && event.isAccent)
+                }
                 && record.actualEvents.count <= 10_000
                 && record.matchResults.count <= 20_000
                 && record.notes.count <= 100_000
                 && record.tags.count <= 100
         }) else {
-            throw PracticeDataPersistenceError.invalidArchive("A session exceeds supported evidence or metadata limits.")
+            throw PracticeDataPersistenceError.invalidArchive("A session exceeds supported evidence limits or contains an invalid accent threshold.")
         }
         let recordIDs = Set(sessionRecords.map(\.id))
         let existingSessionIDs = Set(sessions.map(\.id))
@@ -692,6 +783,7 @@ struct PracticeSessionRecording: Sendable {
     let pattern: PracticePattern
     let exerciseEndSessionTimeNanoseconds: Int64
     let capacity: Int
+    let scoringConfiguration: PracticeScoringConfiguration
 
     private(set) var actualEvents: [PerformanceEvent] = []
     private(set) var droppedEventCount = 0
@@ -699,13 +791,19 @@ struct PracticeSessionRecording: Sendable {
     init(
         pattern: PracticePattern,
         exerciseEndSessionTimeNanoseconds: Int64,
-        capacity: Int = 10_000
+        capacity: Int = 10_000,
+        scoringConfiguration: PracticeScoringConfiguration = .allVoices
     ) {
         precondition(capacity > 0)
         self.pattern = pattern
         self.exerciseEndSessionTimeNanoseconds = exerciseEndSessionTimeNanoseconds
         self.capacity = capacity
+        self.scoringConfiguration = scoringConfiguration
         actualEvents.reserveCapacity(min(capacity, pattern.expectedEvents.count * 2))
+    }
+
+    var scoredActualEventCount: Int {
+        actualEvents.count { scoringConfiguration.includes($0.voice) }
     }
 
     mutating func record(_ event: PerformanceEvent) {
@@ -735,17 +833,20 @@ struct PracticeSessionRecording: Sendable {
         matcher: EventMatcher = EventMatcher(),
         metricsCalculator: ScoringMetricsCalculator = ScoringMetricsCalculator()
     ) -> PracticeSessionOutcome {
-        let matches = matcher.match(expected: pattern.expectedEvents, actual: actualEvents)
+        let scoredExpectedEvents = pattern.expectedEvents.filter { scoringConfiguration.includes($0.voice) }
+        let scoredActualEvents = actualEvents.filter { scoringConfiguration.includes($0.voice) }
+        let matches = matcher.match(expected: scoredExpectedEvents, actual: scoredActualEvents)
         return PracticeSessionOutcome(
             pattern: pattern,
             actualEvents: actualEvents,
             matchResults: matches,
             metrics: metricsCalculator.calculate(
                 from: matches,
-                expectedEvents: pattern.expectedEvents,
-                actualEvents: actualEvents
+                expectedEvents: scoredExpectedEvents,
+                actualEvents: scoredActualEvents
             ),
-            droppedEventCount: droppedEventCount
+            droppedEventCount: droppedEventCount,
+            scoringConfiguration: scoringConfiguration
         )
     }
 

@@ -2,6 +2,58 @@ import XCTest
 @testable import DrumTrainer
 
 final class KickPatternGeneratorTests: XCTestCase {
+    func testSequenceStitchesRepeatsAndMixedGridsWithoutTransitionGaps() throws {
+        let groove = CustomMeasureDefinition(name: "Groove", subdivision: .eighths, hits: [
+            PracticeExerciseHit(slot: 7, voice: .closedHiHat)
+        ])
+        let fill = CustomMeasureDefinition(name: "Fill", subdivision: .triplets, hits: [
+            PracticeExerciseHit(slot: 0, voice: .highTom, isAccent: true),
+            PracticeExerciseHit(slot: 1, voice: .snare, isGhost: true)
+        ])
+        var sequence = CustomMeasureDefinition(name: "Groove into fill")
+        sequence.sequenceSteps = [CustomMeasureStep(measure: groove, repeats: 4), CustomMeasureStep(measure: fill)]
+        sequence.sequenceRepeats = 2
+        let pattern = try KickPatternGenerator().generate(configuration: KickPatternConfiguration(
+            bpm: 120, customMeasure: sequence
+        ), startSessionTimeNanoseconds: 500, startHostTime: 1_000,
+            hostTimeConverter: LinearHostTimeConverter(nanosecondsPerTick: 1))
+        XCTAssertEqual(pattern.measures, 10)
+        XCTAssertEqual(pattern.exactDurationNanoseconds, 20_000_000_000)
+        XCTAssertEqual(pattern.expectedEvents.count, 12)
+        XCTAssertEqual(pattern.measureLabels, ["Groove", "Groove", "Groove", "Groove", "Fill", "Groove", "Groove", "Groove", "Groove", "Fill"])
+        XCTAssertEqual(pattern.subdivision(forMeasure: 4), .eighths)
+        XCTAssertEqual(pattern.subdivision(forMeasure: 5), .triplets)
+        XCTAssertEqual(pattern.expectedEvents[3].sessionTimeNanoseconds, 7_750_000_500)
+        XCTAssertEqual(pattern.expectedEvents[4].sessionTimeNanoseconds, 8_000_000_500)
+        XCTAssertEqual(pattern.expectedEvents[4].hostTime, 8_000_001_000)
+        XCTAssertTrue(pattern.expectedEvents[4].isAccent)
+        XCTAssertTrue(pattern.expectedEvents[5].isGhost)
+        XCTAssertEqual(pattern.expectedEvents[5].sessionTimeNanoseconds, 8_166_667_167)
+        XCTAssertEqual(pattern.referenceBeats?.count, 40)
+        XCTAssertEqual(pattern.referenceBeats?[20].offsetNanoseconds, 10_000_000_000)
+
+        let actual = pattern.expectedEvents.map { note in
+            PerformanceEvent(source: .midi, voice: note.voice, hostTime: note.hostTime!,
+                sessionTimeNanoseconds: note.sessionTimeNanoseconds,
+                rawMetadata: .midi(channel: 9, note: 38, velocity: 100, endpointName: nil))
+        }
+        let matched = EventMatcher().match(expected: pattern.expectedEvents, actual: actual)
+        XCTAssertTrue(matched.allSatisfy { $0.classification == .correct })
+        XCTAssertEqual(matched.count, 12)
+    }
+
+    func testSequenceRejectsEmptyAndExcessiveArrangements() {
+        var sequence = CustomMeasureDefinition()
+        sequence.sequenceSteps = []
+        XCTAssertThrowsError(try KickPatternGenerator().generate(configuration: KickPatternConfiguration(bpm: 120, customMeasure: sequence)))
+        sequence.sequenceSteps = [CustomMeasureStep(measure: CustomMeasureDefinition(hits: [PracticeExerciseHit(slot: 0, voice: .snare)]), repeats: Int.max)]
+        XCTAssertEqual(sequence.sequenceMeasureCount, 0)
+        XCTAssertThrowsError(try KickPatternGenerator().generate(configuration: KickPatternConfiguration(bpm: 120, customMeasure: sequence)))
+        sequence.sequenceSteps?[0].repeats = 16
+        sequence.sequenceRepeats = 16
+        XCTAssertNotNil(sequence.sequenceValidationMessage)
+    }
+
     func testGeneratesOneMeasureOfSixteenthsAt120BPM() throws {
         let pattern = try KickPatternGenerator().generate(configuration: KickPatternConfiguration(
             bpm: 120,
@@ -171,6 +223,80 @@ final class KickPatternGeneratorTests: XCTestCase {
         XCTAssertEqual(Set(firstUnison.compactMap(\.simultaneousGroupID)).count, 1)
         XCTAssertEqual(Set(secondUnison.compactMap(\.simultaneousGroupID)).count, 1)
         XCTAssertNotEqual(firstUnison.first?.simultaneousGroupID, secondUnison.first?.simultaneousGroupID)
+    }
+
+    func testCustomAccentSurvivesEditingRescalingAndPatternGeneration() throws {
+        var custom = CustomMeasureDefinition(subdivision: .sixteenths)
+        custom.toggleAccent(slot: 4, voice: .snare)
+
+        XCTAssertTrue(custom.contains(slot: 4, voice: .snare))
+        XCTAssertTrue(custom.isAccented(slot: 4, voice: .snare))
+        XCTAssertEqual(custom.accentCount, 1)
+
+        custom.rescale(to: .eighths)
+        XCTAssertTrue(custom.isAccented(slot: 2, voice: .snare))
+
+        let threshold = 96.0 / 127.0
+        let contrast = 18.0 / 127.0
+        let pattern = try KickPatternGenerator().generate(configuration: KickPatternConfiguration(
+            bpm: 120,
+            customMeasure: custom,
+            measures: 2,
+            accentVelocityThreshold: threshold,
+            accentVelocityContrast: contrast
+        ))
+
+        XCTAssertEqual(pattern.expectedEvents.count, 2)
+        XCTAssertTrue(pattern.expectedEvents.allSatisfy(\.isAccent))
+        XCTAssertTrue(pattern.expectedEvents.allSatisfy {
+            $0.minimumAccentVelocity == threshold
+        })
+        XCTAssertTrue(pattern.expectedEvents.allSatisfy {
+            $0.minimumAccentContrast == contrast
+        })
+
+        let relativeOnlyPattern = try KickPatternGenerator().generate(configuration: KickPatternConfiguration(
+            bpm: 120,
+            customMeasure: custom,
+            accentVelocityThreshold: nil,
+            accentVelocityContrast: contrast
+        ))
+        XCTAssertNil(relativeOnlyPattern.expectedEvents.first?.minimumAccentVelocity)
+        XCTAssertEqual(relativeOnlyPattern.expectedEvents.first?.minimumAccentContrast, contrast)
+        XCTAssertTrue(relativeOnlyPattern.expectedEvents.first?.isAccent == true)
+
+        custom.toggleAccent(slot: 2, voice: .snare)
+        XCTAssertFalse(custom.isAccented(slot: 2, voice: .snare))
+        XCTAssertTrue(custom.contains(slot: 2, voice: .snare))
+    }
+
+    func testGhostEditingMutualExclusionRescalingAndPersistence() throws {
+        var custom = CustomMeasureDefinition()
+        custom.toggleAccent(slot: 4, voice: .snare)
+        custom.toggleGhost(slot: 4, voice: .snare)
+        XCTAssertFalse(custom.isAccented(slot: 4, voice: .snare))
+        XCTAssertTrue(custom.isGhosted(slot: 4, voice: .snare))
+        custom.rescale(to: .eighths)
+        XCTAssertTrue(custom.isGhosted(slot: 2, voice: .snare))
+        let archive = PracticeDataArchive(customExercises: [SavedCustomExercise(definition: custom)])
+        let decoded = try PracticeDataArchive.decodeAndValidate(archive.encodedJSON())
+        XCTAssertEqual(decoded.customExercises.first?.definition, custom)
+        let pattern = try KickPatternGenerator().generate(configuration: KickPatternConfiguration(
+            bpm: 120, customMeasure: custom, measures: 2, ghostVelocityCeiling: nil,
+            ghostVelocityContrast: 20.0 / 127
+        ))
+        XCTAssertEqual(pattern.expectedEvents.count, 2)
+        XCTAssertTrue(pattern.expectedEvents.allSatisfy {
+            $0.isGhost && !$0.isAccent && $0.maximumGhostVelocity == nil
+                && $0.minimumGhostContrast == 20.0 / 127
+        })
+        custom.toggleAccent(slot: 2, voice: .snare)
+        XCTAssertFalse(custom.isGhosted(slot: 2, voice: .snare))
+        custom.toggleGhost(slot: 2, voice: .snare)
+        custom.toggleGhost(slot: 2, voice: .snare)
+        XCTAssertTrue(custom.contains(slot: 2, voice: .snare))
+        XCTAssertEqual(custom.ghostCount, 0)
+        XCTAssertEqual(custom.accentCount, 0)
     }
 
     func testCustomMeasureCanBeEditedRescaledAndGradedByExactVoice() throws {

@@ -26,11 +26,44 @@ struct PracticeExerciseHit: Codable, Equatable, Hashable, Sendable {
     let slot: Int
     let voice: DrumVoice
     let allowedVoices: Set<DrumVoice>
+    private let accent: Bool?
+    private let ghost: Bool?
 
-    init(slot: Int, voice: DrumVoice, allowedVoices: Set<DrumVoice> = []) {
+    init(
+        slot: Int,
+        voice: DrumVoice,
+        allowedVoices: Set<DrumVoice> = [],
+        isAccent: Bool = false,
+        isGhost: Bool = false
+    ) {
         self.slot = slot
         self.voice = voice
         self.allowedVoices = allowedVoices
+        accent = isAccent ? true : nil
+        ghost = isGhost && !isAccent ? true : nil
+    }
+
+    var isAccent: Bool { accent == true }
+    var isGhost: Bool { ghost == true && !isAccent }
+}
+
+/// A saved snapshot: later edits/deletion of the source measure cannot break a sequence.
+struct CustomMeasureStep: Identifiable, Codable, Equatable, Sendable {
+    var id: UUID = UUID()
+    let name: String
+    let subdivision: KickSubdivision
+    let hits: [PracticeExerciseHit]
+    var repeats: Int
+
+    init(measure: CustomMeasureDefinition, repeats: Int = 1) {
+        name = measure.displayName
+        subdivision = measure.subdivision
+        hits = measure.hits
+        self.repeats = repeats
+    }
+
+    var measure: CustomMeasureDefinition {
+        CustomMeasureDefinition(name: name, subdivision: subdivision, hits: hits)
     }
 }
 
@@ -38,6 +71,8 @@ struct CustomMeasureDefinition: Codable, Equatable, Sendable {
     var name: String
     private(set) var subdivision: KickSubdivision
     private(set) var hits: [PracticeExerciseHit]
+    var sequenceSteps: [CustomMeasureStep]?
+    var sequenceRepeats: Int?
 
     init(
         name: String = "My custom measure",
@@ -55,10 +90,59 @@ struct CustomMeasureDefinition: Codable, Equatable, Sendable {
     }
 
     var slotsPerMeasure: Int { subdivision.notesPerBeat * 4 }
-    var isEmpty: Bool { hits.isEmpty }
+    var isSequence: Bool { sequenceSteps != nil }
+    var isEmpty: Bool { isSequence ? (sequenceSteps?.isEmpty ?? true) : hits.isEmpty }
+    var sequenceMeasureCount: Int {
+        guard let steps = sequenceSteps, steps.count <= 32,
+              steps.allSatisfy({ (1...16).contains($0.repeats) }),
+              (1...16).contains(sequenceRepeats ?? 1) else { return 0 }
+        return steps.reduce(0) { $0 + $1.repeats } * (sequenceRepeats ?? 1)
+    }
+    var sequenceValidationMessage: String? {
+        guard let steps = sequenceSteps else { return nil }
+        guard !steps.isEmpty else { return "Add a saved measure to the sequence before starting." }
+        guard steps.count <= 32, Set(steps.map(\.id)).count == steps.count,
+              steps.allSatisfy({ (1...16).contains($0.repeats) && !$0.hits.isEmpty && $0.hits == $0.measure.hits }),
+              (1...16).contains(sequenceRepeats ?? 1), (1...128).contains(sequenceMeasureCount) else {
+            return "Use up to 32 steps, 1–16 repeats, and at most 128 total measures. Each step must contain valid notes."
+        }
+        let hitCount = steps.reduce(0) { $0 + $1.hits.count * $1.repeats } * (sequenceRepeats ?? 1)
+        guard hitCount <= 10_000 else { return "Shorten this sequence to at most 10,000 notes per run." }
+        return nil
+    }
+    var expandedSequence: [CustomMeasureDefinition] {
+        guard let steps = sequenceSteps, sequenceValidationMessage == nil else { return [] }
+        let pass = steps.flatMap { Array(repeating: $0.measure, count: $0.repeats) }
+        return (0..<(sequenceRepeats ?? 1)).flatMap { _ in pass }
+    }
 
     func contains(slot: Int, voice: DrumVoice) -> Bool {
         hits.contains { $0.slot == slot && $0.voice == voice }
+    }
+
+    func isAccented(slot: Int, voice: DrumVoice) -> Bool {
+        hits.first { $0.slot == slot && $0.voice == voice }?.isAccent == true
+    }
+
+    var accentCount: Int { hits.count(where: \.isAccent) }
+
+    func isGhosted(slot: Int, voice: DrumVoice) -> Bool {
+        hits.first { $0.slot == slot && $0.voice == voice }?.isGhost == true
+    }
+
+    var ghostCount: Int { hits.count(where: \.isGhost) }
+
+    mutating func toggleGhost(slot: Int, voice: DrumVoice) {
+        guard (0..<slotsPerMeasure).contains(slot), Self.isScorable(voice) else { return }
+        if let index = hits.firstIndex(where: { $0.slot == slot && $0.voice == voice }) {
+            let hit = hits[index]
+            hits[index] = PracticeExerciseHit(
+                slot: slot, voice: voice, allowedVoices: hit.allowedVoices, isGhost: !hit.isGhost
+            )
+        } else {
+            hits.append(PracticeExerciseHit(slot: slot, voice: voice, isGhost: true))
+        }
+        hits = Self.normalized(hits, subdivision: subdivision)
     }
 
     mutating func toggle(slot: Int, voice: DrumVoice) {
@@ -69,6 +153,22 @@ struct CustomMeasureDefinition: Codable, Equatable, Sendable {
             hits.append(PracticeExerciseHit(slot: slot, voice: voice))
             hits = Self.normalized(hits, subdivision: subdivision)
         }
+    }
+
+    mutating func toggleAccent(slot: Int, voice: DrumVoice) {
+        guard (0..<slotsPerMeasure).contains(slot), Self.isScorable(voice) else { return }
+        if let index = hits.firstIndex(where: { $0.slot == slot && $0.voice == voice }) {
+            let hit = hits[index]
+            hits[index] = PracticeExerciseHit(
+                slot: hit.slot,
+                voice: hit.voice,
+                allowedVoices: hit.allowedVoices,
+                isAccent: !hit.isAccent
+            )
+        } else {
+            hits.append(PracticeExerciseHit(slot: slot, voice: voice, isAccent: true))
+        }
+        hits = Self.normalized(hits, subdivision: subdivision)
     }
 
     mutating func clear() {
@@ -90,7 +190,9 @@ struct CustomMeasureDefinition: Codable, Equatable, Sendable {
             return PracticeExerciseHit(
                 slot: min(max(scaled, 0), newSlotCount - 1),
                 voice: hit.voice,
-                allowedVoices: hit.allowedVoices
+                allowedVoices: hit.allowedVoices,
+                isAccent: hit.isAccent,
+                isGhost: hit.isGhost
             )
         }
         subdivision = newSubdivision
@@ -102,8 +204,18 @@ struct CustomMeasureDefinition: Codable, Equatable, Sendable {
         subdivision: KickSubdivision
     ) -> [PracticeExerciseHit] {
         let validSlots = 0..<(subdivision.notesPerBeat * 4)
-        return Array(Set(hits.filter { validSlots.contains($0.slot) && isScorable($0.voice) }))
-            .sorted { lhs, rhs in
+        // Grid changes can collapse slots. Keep one note per voice/cell, preferring
+        // an authored dynamic marking when a marked and normal note overlap.
+        let groups = Dictionary(
+            grouping: hits.filter { validSlots.contains($0.slot) && isScorable($0.voice) },
+            by: { "\($0.slot):\($0.voice.rawValue)" }
+        )
+        let uniqueHits: [PracticeExerciseHit] = groups.values.compactMap { group in
+            if let accented = group.first(where: { $0.isAccent }) { return accented }
+            if let ghost = group.first(where: { $0.isGhost }) { return ghost }
+            return group.first
+        }
+        return uniqueHits.sorted { lhs, rhs in
                 lhs.slot == rhs.slot
                     ? voiceOrder(lhs.voice) < voiceOrder(rhs.voice)
                     : lhs.slot < rhs.slot
@@ -327,6 +439,8 @@ struct PracticePattern: Identifiable, Codable, Equatable, Sendable {
     let measureSignatures: [PracticeMeasureSignature]?
     let measureStartOffsetsNanoseconds: [Int64]?
     let referenceBeats: [PracticeReferenceBeat]?
+    let measureSubdivisions: [KickSubdivision]?
+    let measureLabels: [String]?
 
     init(
         id: UUID = UUID(),
@@ -340,7 +454,9 @@ struct PracticePattern: Identifiable, Codable, Equatable, Sendable {
         durationNanoseconds: Int64? = nil,
         measureSignatures: [PracticeMeasureSignature]? = nil,
         measureStartOffsetsNanoseconds: [Int64]? = nil,
-        referenceBeats: [PracticeReferenceBeat]? = nil
+        referenceBeats: [PracticeReferenceBeat]? = nil,
+        measureSubdivisions: [KickSubdivision]? = nil,
+        measureLabels: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -356,6 +472,18 @@ struct PracticePattern: Identifiable, Codable, Equatable, Sendable {
         self.measureSignatures = measureSignatures
         self.measureStartOffsetsNanoseconds = measureStartOffsetsNanoseconds
         self.referenceBeats = referenceBeats
+        self.measureSubdivisions = measureSubdivisions
+        self.measureLabels = measureLabels
+    }
+
+    func subdivision(forMeasure measure: Int) -> KickSubdivision {
+        guard let measureSubdivisions, measure > 0, measure <= measureSubdivisions.count else { return subdivision }
+        return measureSubdivisions[measure - 1]
+    }
+
+    func label(forMeasure measure: Int) -> String? {
+        guard let measureLabels, measure > 0, measure <= measureLabels.count else { return nil }
+        return measureLabels[measure - 1]
     }
 
     func signature(forMeasure measure: Int) -> PracticeMeasureSignature {
@@ -385,6 +513,10 @@ struct ExpectedEvent: Identifiable, Codable, Equatable, Sendable {
     let voice: DrumVoice
     let allowedVoices: Set<DrumVoice>
     let expectedVelocity: Double?
+    let minimumAccentVelocity: Double?
+    let minimumAccentContrast: Double?
+    let maximumGhostVelocity: Double?
+    let minimumGhostContrast: Double?
     let matchingToleranceNanoseconds: Int64
     let simultaneousGroupID: UUID?
 
@@ -398,6 +530,10 @@ struct ExpectedEvent: Identifiable, Codable, Equatable, Sendable {
         voice: DrumVoice,
         allowedVoices: Set<DrumVoice> = [],
         expectedVelocity: Double? = nil,
+        minimumAccentVelocity: Double? = nil,
+        minimumAccentContrast: Double? = nil,
+        maximumGhostVelocity: Double? = nil,
+        minimumGhostContrast: Double? = nil,
         matchingToleranceNanoseconds: Int64 = 100_000_000,
         simultaneousGroupID: UUID? = nil
     ) {
@@ -410,12 +546,142 @@ struct ExpectedEvent: Identifiable, Codable, Equatable, Sendable {
         self.voice = voice
         self.allowedVoices = allowedVoices
         self.expectedVelocity = expectedVelocity
+        self.minimumAccentVelocity = minimumAccentVelocity.map { min(max($0, 0), 1) }
+        self.minimumAccentContrast = minimumAccentContrast.map { min(max($0, 0), 1) }
+        self.maximumGhostVelocity = maximumGhostVelocity
+        self.minimumGhostContrast = minimumGhostContrast
         self.matchingToleranceNanoseconds = max(0, matchingToleranceNanoseconds)
         self.simultaneousGroupID = simultaneousGroupID
     }
 
     func accepts(_ actualVoice: DrumVoice) -> Bool {
         actualVoice == voice || allowedVoices.contains(actualVoice)
+    }
+
+    var isAccent: Bool { minimumAccentVelocity != nil || minimumAccentContrast != nil }
+    var isGhost: Bool { maximumGhostVelocity != nil || minimumGhostContrast != nil }
+}
+
+enum AccentResultClassification: String, Codable, Equatable, Sendable {
+    case achieved
+    case belowThreshold
+    case insufficientContrast
+    case missed
+    case velocityUnavailable
+    case baselineUnavailable
+}
+
+struct AccentResult: Identifiable, Codable, Equatable, Sendable {
+    let expectedEventID: UUID
+    let actualEventID: UUID?
+    let voice: DrumVoice
+    let minimumVelocity: Double?
+    let baselineVelocity: Double?
+    let requiredContrast: Double?
+    let requiredVelocity: Double?
+    let usedMinimumOnly: Bool?
+    let actualVelocity: Double?
+    let classification: AccentResultClassification
+
+    var id: UUID { expectedEventID }
+    var didUseMinimumOnly: Bool { usedMinimumOnly == true }
+}
+
+struct AccentMetrics: Codable, Equatable, Sendable {
+    let expectedCount: Int
+    let achievedCount: Int
+    let belowThresholdCount: Int
+    let missedCount: Int
+    let velocityUnavailableCount: Int
+    let baselineUnavailableCount: Int?
+    let accuracy: Double
+
+    var notEvaluatedCount: Int {
+        missedCount + velocityUnavailableCount + (baselineUnavailableCount ?? 0)
+    }
+
+    var passesCleanThreshold: Bool {
+        expectedCount > 0 && accuracy >= 0.9
+    }
+}
+
+struct AccentEvaluation: Codable, Equatable, Sendable {
+    let metrics: AccentMetrics
+    let results: [AccentResult]
+
+    func voiceAccuracy(for voice: DrumVoice) -> DynamicVoiceAccuracy? {
+        let voiceResults = results.filter { $0.voice == voice }
+        guard !voiceResults.isEmpty else { return nil }
+        return DynamicVoiceAccuracy(
+            expectedCount: voiceResults.count,
+            achievedCount: voiceResults.count { $0.classification == .achieved }
+        )
+    }
+}
+
+enum GhostResultClassification: String, Codable, Equatable, Sendable {
+    case achieved
+    case aboveThreshold
+    case insufficientContrast
+    case missed
+    case velocityUnavailable
+    case baselineUnavailable
+}
+
+struct GhostResult: Identifiable, Codable, Equatable, Sendable {
+    let expectedEventID: UUID
+    let actualEventID: UUID?
+    let voice: DrumVoice
+    let maximumVelocity: Double?
+    let baselineVelocity: Double?
+    let requiredContrast: Double?
+    let requiredVelocity: Double?
+    let usedMaximumOnly: Bool?
+    let actualVelocity: Double?
+    let classification: GhostResultClassification
+
+    var id: UUID { expectedEventID }
+    var didUseMaximumOnly: Bool { usedMaximumOnly == true }
+}
+
+struct GhostMetrics: Codable, Equatable, Sendable {
+    let expectedCount: Int
+    let achievedCount: Int
+    let aboveThresholdCount: Int
+    let missedCount: Int
+    let velocityUnavailableCount: Int
+    let baselineUnavailableCount: Int?
+    let accuracy: Double
+
+    var notEvaluatedCount: Int {
+        missedCount + velocityUnavailableCount + (baselineUnavailableCount ?? 0)
+    }
+
+    var passesCleanThreshold: Bool {
+        expectedCount > 0 && accuracy >= 0.9
+    }
+}
+
+struct GhostEvaluation: Codable, Equatable, Sendable {
+    let metrics: GhostMetrics
+    let results: [GhostResult]
+
+    func voiceAccuracy(for voice: DrumVoice) -> DynamicVoiceAccuracy? {
+        let voiceResults = results.filter { $0.voice == voice }
+        guard !voiceResults.isEmpty else { return nil }
+        return DynamicVoiceAccuracy(
+            expectedCount: voiceResults.count,
+            achievedCount: voiceResults.count { $0.classification == .achieved }
+        )
+    }
+}
+
+struct DynamicVoiceAccuracy: Equatable, Sendable {
+    let expectedCount: Int
+    let achievedCount: Int
+
+    var accuracy: Double {
+        expectedCount == 0 ? 0 : Double(achievedCount) / Double(expectedCount)
     }
 }
 
@@ -518,4 +784,17 @@ struct AggregateMetrics: Codable, Equatable, Sendable {
     let longestCleanStreak: Int
     let perVoice: [VoiceMetrics]
     let limbSynchronization: LimbSynchronizationMetrics?
+}
+
+struct StableTimingBiasEvaluation: Equatable, Sendable {
+    let sampleCount: Int
+    let biasMilliseconds: Double
+    let medianAbsoluteDeviationMilliseconds: Double
+    let rawMedianAbsoluteErrorMilliseconds: Double
+    let adjustedMedianAbsoluteErrorMilliseconds: Double
+}
+
+struct PracticeCoachingSummary: Equatable, Sendable {
+    let overview: String
+    let nextStep: String
 }

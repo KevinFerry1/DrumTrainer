@@ -119,6 +119,27 @@ final class EventMatcherTests: XCTestCase {
         XCTAssertEqual(actual.sessionTimeNanoseconds, 1_050_000_000)
     }
 
+    func testVoiceTimingCompensationAppliesIndependentOffsetsToEachDrum() {
+        let expected = [
+            expectedEvent(milliseconds: 1_000, voice: .snare, toleranceMilliseconds: 10),
+            expectedEvent(milliseconds: 1_500, voice: .openHiHat, toleranceMilliseconds: 10)
+        ]
+        let actual = [
+            actualEvent(milliseconds: 1_050, voice: .snare),
+            actualEvent(milliseconds: 1_520, voice: .openHiHat)
+        ]
+        let compensated = EventMatcher(voiceTimingCompensationNanoseconds: [
+            EventTimingCompensationKey(source: .midi, voice: .snare): 50_000_000,
+            EventTimingCompensationKey(source: .midi, voice: .openHiHat): 20_000_000
+        ])
+
+        let results = compensated.match(expected: expected, actual: actual)
+
+        XCTAssertEqual(results.map(\.classification), [.correct, .correct])
+        XCTAssertEqual(results.compactMap(\.signedOffsetMilliseconds), [0, 0])
+        XCTAssertEqual(actual.map(\.sessionTimeNanoseconds), [1_050_000_000, 1_520_000_000])
+    }
+
     func testNearSimultaneousChordMatchesByVoiceDespiteArrivalOrder() {
         let expected = [
             expectedEvent(milliseconds: 1_000, voice: .kick),

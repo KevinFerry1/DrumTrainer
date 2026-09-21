@@ -1,7 +1,494 @@
 import XCTest
+import CoreAudio
 @testable import DrumTrainer
 
 final class PracticeSessionRecordingTests: XCTestCase {
+    @MainActor
+    func testSavedSequencePreservesSnapshotsReorderingRepeatsAndGradedHistory() throws {
+        let suite = "SequenceTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UserDefaultsPracticeDataStore(defaults: defaults)
+        let state = AppState(clock: FixedHostClock(hostTime: 100),
+            converter: LinearHostTimeConverter(nanosecondsPerTick: 1), practiceDataStore: store,
+            metronomeEngine: ControllableTestMetronome())
+        state.practiceExerciseMode = .custom
+        state.practiceCustomMeasure = CustomMeasureDefinition(name: "A", hits: [PracticeExerciseHit(slot: 0, voice: .snare)])
+        state.saveCustomExercise()
+        let a = try XCTUnwrap(state.selectedSavedCustomExerciseID)
+        state.practiceCustomMeasure = CustomMeasureDefinition(name: "B", subdivision: .triplets, hits: [PracticeExerciseHit(slot: 1, voice: .openHiHat)])
+        state.saveCustomExercise(asNew: true)
+        let b = try XCTUnwrap(state.selectedSavedCustomExerciseID)
+        state.setCustomSequenceMode(true)
+        state.addCustomSequenceStep(savedID: a)
+        state.addCustomSequenceStep(savedID: b)
+        let firstID = try XCTUnwrap(state.practiceCustomMeasure.sequenceSteps?.first?.id)
+        state.updateCustomSequenceStep(id: firstID, repeats: 4)
+        XCTAssertEqual(state.practiceMeasures, 5)
+        state.updateCustomSequenceStep(id: firstID, moveBy: 1)
+        XCTAssertEqual(state.practiceCustomMeasure.sequenceSteps?.map(\.name), ["B", "A"])
+        state.setCustomSequenceRepeats(2)
+        XCTAssertEqual(state.practiceMeasures, 10)
+        state.practiceCustomMeasure.name = "Transition practice"
+        state.saveCustomExercise()
+        let sequenceID = try XCTUnwrap(state.selectedSavedCustomExerciseID)
+        XCTAssertNotEqual(sequenceID, b)
+        state.deleteSavedCustomExercise(id: a)
+        XCTAssertEqual(state.practicePreviewPattern?.expectedEvents.count, 10)
+
+        let loaded = AppState(clock: FixedHostClock(hostTime: 100),
+            converter: LinearHostTimeConverter(nanosecondsPerTick: 1), practiceDataStore: store,
+            metronomeEngine: ControllableTestMetronome())
+        loaded.loadSavedCustomExercise(id: sequenceID)
+        XCTAssertEqual(loaded.practiceMeasures, 10)
+        XCTAssertEqual(loaded.practiceCustomMeasure.sequenceSteps?.map(\.name), ["B", "A"])
+        loaded.startPractice()
+        for beat in 0..<9 {
+            loaded.handlePracticeTick(MetronomeTick(hostTime: UInt64(1_000_000_000 + beat * 500_000_000), beat: beat % 4 + 1, isAccent: beat.isMultiple(of: 4)))
+        }
+        guard case .running = loaded.practicePhase else { return XCTFail("Sequence failed to start") }
+        let pattern = try XCTUnwrap(loaded.practiceActivePattern)
+        XCTAssertEqual(pattern.measures, 10)
+        for note in pattern.expectedEvents {
+            loaded.recordPracticeEvent(PerformanceEvent(source: .midi, voice: note.voice, hostTime: note.hostTime!,
+                sessionTimeNanoseconds: note.sessionTimeNanoseconds,
+                rawMetadata: .midi(channel: 9, note: 38, velocity: 100, endpointName: nil)))
+        }
+        loaded.finishPractice()
+        XCTAssertEqual(loaded.practiceOutcome?.metrics.recall, 1)
+        XCTAssertEqual(loaded.practiceHistory.first?.customExerciseID, sequenceID)
+        let exported = try PracticeDataArchive.decodeAndValidate(loaded.exportPracticeData())
+        XCTAssertEqual(exported.sessionRecords.first?.pattern.measureLabels, pattern.measureLabels)
+        XCTAssertEqual(exported.sessionRecords.first?.pattern.measureSubdivisions, pattern.measureSubdivisions)
+        loaded.dismissPracticeResults()
+        loaded.updateCustomSequenceStep(id: firstID, remove: true)
+        XCTAssertEqual(loaded.practiceMeasures, 2)
+        loaded.setCustomSequenceMode(false)
+        XCTAssertFalse(loaded.practiceCustomMeasure.isSequence)
+        loaded.resetPracticeTransport()
+    }
+
+    func testLegacyCustomMeasuresMigrateAndInvalidSequencesCannotBeImported() throws {
+        let measure = CustomMeasureDefinition(name: "Legacy", hits: [PracticeExerciseHit(slot: 0, voice: .snare)])
+        let old = PracticeDataArchive(schemaVersion: 8, customExercises: [SavedCustomExercise(definition: measure)])
+        let migrated = try PracticeDataArchive.decodeAndValidate(old.encodedJSON())
+        XCTAssertEqual(migrated.schemaVersion, 9)
+        XCTAssertFalse(try XCTUnwrap(migrated.customExercises.first).definition.isSequence)
+        var invalid = measure
+        invalid.sequenceSteps = [CustomMeasureStep(measure: measure, repeats: 0)]
+        XCTAssertThrowsError(try PracticeDataArchive(customExercises: [SavedCustomExercise(definition: invalid)]).validatedAndMigrated())
+    }
+
+    func testExternalOnsetRequiresQuietAndSustainedSoundAndBackdatesConfirmation() {
+        var detector = PlaybackOnsetDetector(thresholdDBFS: -45)
+        for index in 0..<20 {
+            XCTAssertNil(detector.consume(levelDBFS: -10, time: Double(index) * 0.01, duration: 0.01))
+        }
+        XCTAssertFalse(detector.isReady)
+        for index in 20..<60 {
+            XCTAssertNil(detector.consume(levelDBFS: -90, time: Double(index) * 0.01, duration: 0.01))
+        }
+        XCTAssertTrue(detector.isReady)
+        XCTAssertNil(detector.consume(levelDBFS: -10, time: 0.60, duration: 0.005))
+        XCTAssertNil(detector.consume(levelDBFS: -90, time: 0.605, duration: 0.005))
+        XCTAssertNil(detector.consume(levelDBFS: -10, time: 0.61, duration: 0.01))
+        XCTAssertEqual(detector.consume(levelDBFS: -10, time: 0.62, duration: 0.01), 0.61)
+        XCTAssertNil(detector.consume(levelDBFS: -10, time: 0.63, duration: 0.01))
+    }
+
+    func testExternalOnsetRejectsInvalidSamplesAndReRequiresQuietAfterDiscontinuity() {
+        var detector = PlaybackOnsetDetector(thresholdDBFS: .nan)
+        XCTAssertEqual(detector.thresholdDBFS, -45)
+        detector.observeSilentCaptureInterval()
+        XCTAssertNil(detector.consume(levelDBFS: .nan, time: 0, duration: 0.02))
+        XCTAssertNil(detector.consume(levelDBFS: -10, time: .infinity, duration: 0.02))
+        XCTAssertNil(detector.consume(levelDBFS: -10, time: 0, duration: 0))
+        XCTAssertNil(detector.consume(levelDBFS: -10, time: 0, duration: 0.01))
+        XCTAssertNil(detector.consume(levelDBFS: -10, time: 2, duration: 0.02))
+        XCTAssertFalse(detector.isReady)
+        detector.observeSilentCaptureInterval()
+        XCTAssertEqual(detector.consume(levelDBFS: -10, time: 3, duration: 0.02), 3)
+    }
+
+    @MainActor
+    func testExternalPlaybackStartsWithoutClicksAndRetainsFirstHitButNotProgress() async throws {
+        let listener = TestPlaybackListener()
+        let transport = ControllableTestMetronome()
+        let state = try makeExternalState(transport, listener: listener)
+        state.startPractice()
+        XCTAssertEqual(state.practicePhase, .waitingForPlayback)
+        XCTAssertEqual(transport.startCount, 0)
+        for _ in 0..<20 { await Task.yield() }
+        state.recordPracticeEvent(PerformanceEvent(
+            source: .midi, voice: .snare, hostTime: 100, sessionTimeNanoseconds: 0,
+            velocity: 100.0 / 127.0, rawMetadata: .midi(channel: 9, note: 38, velocity: 100, endpointName: "test")
+        ))
+        try XCTUnwrap(listener.onsets.first)(100)
+        guard case let .running(start, _) = state.practicePhase else { return XCTFail("No external start") }
+        XCTAssertEqual(start, 0)
+        XCTAssertEqual(state.practiceRecordedHitCount, 1)
+        XCTAssertEqual(transport.startCount, 0)
+        state.finishPractice()
+        XCTAssertEqual(state.practicePhase, .results)
+        XCTAssertEqual(state.practiceOutcome?.metrics.recall, 1)
+        XCTAssertTrue(state.practiceHistory.isEmpty)
+        XCTAssertTrue(state.practiceSessionRecords.isEmpty)
+        XCTAssertNil(state.lastTempoProgressionMessage)
+        XCTAssertGreaterThan(listener.stopCount, 0)
+    }
+
+    @MainActor
+    func testExternalPlaybackRejectsOldCallbacksTimeoutsAndDuplicateOnsetsAcrossReplays() async throws {
+        let listener = TestPlaybackListener()
+        let transport = ControllableTestMetronome()
+        let state = try makeExternalState(transport, listener: listener)
+        for _ in 0..<20 {
+            state.startPractice()
+            let oldID = try XCTUnwrap(state.playbackArmID)
+            for _ in 0..<10 { await Task.yield() }
+            let oldOnset = try XCTUnwrap(listener.onsets.last)
+            let oldError = try XCTUnwrap(listener.errors.last)
+            state.cancelPractice()
+            oldOnset(100)
+            XCTAssertEqual(state.practicePhase, .idle)
+            state.startPractice()
+            let newID = try XCTUnwrap(state.playbackArmID)
+            state.handlePlaybackWaitTimeout(id: oldID)
+            oldError("stale failure")
+            oldOnset(100)
+            XCTAssertEqual(state.practicePhase, .waitingForPlayback)
+            XCTAssertEqual(state.playbackArmID, newID)
+            state.handleExternalPlaybackOnset(hostTime: 100, id: newID)
+            let pattern = state.practiceActivePattern
+            state.handleExternalPlaybackOnset(hostTime: 150, id: newID)
+            XCTAssertEqual(state.practiceActivePattern, pattern)
+            state.finishPractice()
+            state.dismissPracticeResults()
+        }
+        XCTAssertEqual(transport.startCount, 0)
+        state.resetPracticeTransport()
+    }
+
+    @MainActor
+    func testExternalTimeoutPermissionFailureAndSyncLossLeaveRetryAvailable() async throws {
+        let listener = TestPlaybackListener()
+        let state = try makeExternalState(ControllableTestMetronome(), listener: listener)
+        state.startPractice()
+        state.handlePlaybackWaitTimeout(id: try XCTUnwrap(state.playbackArmID))
+        guard case .error = state.practicePhase else { return XCTFail("Timeout must fail") }
+        XCTAssertNil(state.playbackArmID)
+        listener.shouldFail = true
+        state.startPractice()
+        for _ in 0..<20 { await Task.yield() }
+        guard case .error = state.practicePhase else { return XCTFail("Permission failure must unlock") }
+        listener.shouldFail = false
+        state.startPractice()
+        state.handleExternalPlaybackOnset(hostTime: 100, id: try XCTUnwrap(state.playbackArmID))
+        state.markExternalPlaybackSyncLost()
+        guard case .error = state.practicePhase else { return XCTFail("Sync loss must cancel") }
+        XCTAssertNil(state.practiceOutcome)
+        XCTAssertTrue(state.practiceHistory.isEmpty)
+        state.startPractice()
+        XCTAssertEqual(state.practicePhase, .waitingForPlayback)
+        state.resetPracticeTransport()
+        XCTAssertEqual(state.practicePhase, .idle)
+    }
+
+    @MainActor
+    func testExternalStartOffsetAndNormalModeIsolation() throws {
+        let listener = TestPlaybackListener()
+        let transport = ControllableTestMetronome()
+        let state = try makeExternalState(transport, listener: listener)
+        state.playbackStartOffsetMilliseconds = 125
+        state.startPractice()
+        state.handleExternalPlaybackOnset(hostTime: 100, id: try XCTUnwrap(state.playbackArmID))
+        XCTAssertEqual(state.practiceActivePattern?.startSessionTimeNanoseconds, 125_000_000)
+        state.cancelPractice()
+        state.playbackStartOffsetMilliseconds = -0.00005
+        state.startPractice()
+        state.handleExternalPlaybackOnset(hostTime: 100, id: try XCTUnwrap(state.playbackArmID))
+        XCTAssertEqual(state.practiceActivePattern?.startSessionTimeNanoseconds, -50)
+        state.resetPracticeTransport()
+        state.practiceExerciseMode = .builtIn
+        state.practiceExercise = .basicRockGroove
+        state.startPractice()
+        XCTAssertFalse(state.isExternalPlaybackRun)
+        XCTAssertEqual(state.practicePhase, .countIn(beatsRemaining: 8))
+        XCTAssertEqual(transport.startCount, 1)
+        state.resetPracticeTransport()
+    }
+
+    @MainActor
+    func testExternalPlaybackRequiresSourceSinglePassAndFreshTimestamp() throws {
+        let state = try makeExternalState(ControllableTestMetronome(), listener: TestPlaybackListener())
+        state.selectedPlaybackSourceID = nil
+        state.startPractice()
+        XCTAssertFalse(state.practicePhase.isActive)
+        state.selectedPlaybackSourceID = 42
+        state.importedSectionRepeats = 2
+        state.startPractice()
+        XCTAssertFalse(state.practicePhase.isActive)
+        state.importedSectionRepeats = 1
+        state.startPractice()
+        state.handleExternalPlaybackOnset(hostTime: 99, id: try XCTUnwrap(state.playbackArmID))
+        guard case .error = state.practicePhase else { return XCTFail("Old sample must not grade") }
+        state.resetPracticeTransport()
+    }
+
+    @MainActor
+    func testExternalPlaybackDiscardsTruncatedPreRollAndOutputChanges() throws {
+        let state = try makeExternalState(ControllableTestMetronome(), listener: TestPlaybackListener())
+        state.startPractice()
+        for _ in 0..<513 {
+            state.recordPracticeEvent(PerformanceEvent(
+                source: .midi, voice: .snare, hostTime: 100, sessionTimeNanoseconds: 0,
+                rawMetadata: .midi(channel: 9, note: 38, velocity: 100, endpointName: "test")
+            ))
+        }
+        state.handleExternalPlaybackOnset(hostTime: 100, id: try XCTUnwrap(state.playbackArmID))
+        guard case .error = state.practicePhase else { return XCTFail("Incomplete pre-roll must not grade") }
+        state.startPractice()
+        state.handleExternalPlaybackOnset(hostTime: 100, id: try XCTUnwrap(state.playbackArmID))
+        state.selectAudioOutput(nil)
+        guard case .error = state.practicePhase else { return XCTFail("Route change must invalidate alignment") }
+        XCTAssertNil(state.practiceOutcome)
+        state.resetPracticeTransport()
+    }
+
+    @MainActor
+    private func makeExternalState(_ transport: ControllableTestMetronome, listener: TestPlaybackListener) throws -> AppState {
+        let state = AppState(
+            clock: FixedHostClock(hostTime: 100), converter: LinearHostTimeConverter(nanosecondsPerTick: 1),
+            practiceDataStore: DiscardingTransportTestStore(), metronomeEngine: transport,
+            externalPlaybackListener: listener
+        )
+        try state.importStandardMIDI(Data([
+            0x4D, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, 0, 0, 1, 1, 0xE0,
+            0x4D, 0x54, 0x72, 0x6B, 0, 0, 0, 9,
+            0, 0x99, 38, 100, 0x8F, 0, 0xFF, 0x2F, 0
+        ]), filename: "External fixture.mid")
+        state.waitForExternalPlayback = true
+        state.selectedPlaybackSourceID = 42
+        state.importedSectionRepeats = 1
+        state.practiceBPM = 120
+        return state
+    }
+
+    @MainActor
+    func testSixtyPracticeReplaysCompleteCountInAndReturnToStartableState() throws {
+        let transport = ControllableTestMetronome()
+        let state = makeTransportState(transport)
+        state.practiceMeasures = 1
+        for attempt in 0..<60 {
+            state.practiceExercise = attempt.isMultiple(of: 2) ? .basicRockGroove : .discoGroove
+            state.startPractice()
+            XCTAssertEqual(state.practicePhase, .countIn(beatsRemaining: 8))
+            for beat in 0..<9 {
+                state.handlePracticeTick(MetronomeTick(
+                    hostTime: UInt64(1_000_000_000 + beat * 500_000_000),
+                    beat: beat % 4 + 1, isAccent: beat.isMultiple(of: 4)
+                ))
+            }
+            guard case .running = state.practicePhase else { return XCTFail("Replay \(attempt) did not start") }
+            state.finishPractice()
+            XCTAssertEqual(state.practicePhase, .results)
+            state.dismissPracticeResults()
+            XCTAssertEqual(state.practicePhase, .idle)
+            XCTAssertFalse(state.isRefreshingAudioEngine)
+        }
+        XCTAssertEqual(transport.startCount, 60)
+        XCTAssertEqual(state.practiceHistory.count, 60)
+        state.resetPracticeTransport()
+    }
+
+    @MainActor
+    func testCancelledRefreshAlwaysUnlocksWithoutRestartingPractice() async {
+        let transport = ControllableTestMetronome()
+        let state = makeTransportState(transport)
+        state.startPractice()
+        state.refreshAudioEngineAndRetryPractice()
+        state.cancelPractice()
+        transport.completeRefresh(at: 0)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(state.isRefreshingAudioEngine)
+        XCTAssertEqual(state.practicePhase, .idle)
+        XCTAssertEqual(transport.startCount, 1)
+    }
+
+    @MainActor
+    func testTimeoutUnlocksEvenAfterFlowChangesAndRejectsLateCompletion() async throws {
+        let transport = ControllableTestMetronome()
+        let state = makeTransportState(transport)
+        state.startPractice()
+        state.refreshAudioEngineAndRetryPractice()
+        let refreshID = try XCTUnwrap(state.audioEngineRefreshID)
+        state.cancelPractice()
+        state.handleAudioRefreshTimeout(requestID: refreshID)
+        XCTAssertFalse(state.isRefreshingAudioEngine)
+        state.startPractice()
+        transport.completeRefresh(at: 0)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(transport.startCount, 2)
+        XCTAssertEqual(state.practicePhase, .countIn(beatsRemaining: 8))
+        state.resetPracticeTransport()
+    }
+
+    @MainActor
+    func testOldRefreshCannotReleaseNewRefreshOrRepeatedRetryStrandCountdown() async throws {
+        let transport = ControllableTestMetronome()
+        let state = makeTransportState(transport)
+        state.refreshAudioEngine()
+        let oldID = try XCTUnwrap(state.audioEngineRefreshID)
+        state.resetPracticeTransport()
+        state.refreshAudioEngine()
+        let newID = try XCTUnwrap(state.audioEngineRefreshID)
+        state.refreshAudioEngineAndRetryPractice()
+        XCTAssertEqual(state.practicePhase, .idle)
+        transport.completeRefresh(at: 0)
+        for _ in 0..<20 { await Task.yield() }
+        state.handleAudioRefreshTimeout(requestID: oldID)
+        XCTAssertTrue(state.isRefreshingAudioEngine)
+        XCTAssertEqual(state.audioEngineRefreshID, newID)
+        transport.completeRefresh(at: 1)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(state.isRefreshingAudioEngine)
+        XCTAssertEqual(state.practicePhase, .idle)
+    }
+
+    @MainActor
+    func testCountInStallRetriesOnceThenOffersRecoverableError() async {
+        let transport = ControllableTestMetronome()
+        let state = makeTransportState(transport)
+        state.startPractice()
+        state.handlePracticeTick(MetronomeTick(hostTime: 1, beat: 1, isAccent: true))
+        XCTAssertEqual(state.practicePhase, .countIn(beatsRemaining: 8), "Old ticks must not advance a new run")
+        state.recoverFromMetronomeStall()
+        transport.completeRefresh(at: 0)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(transport.startCount, 2)
+        state.recoverFromMetronomeStall()
+        guard case .error = state.practicePhase else { return XCTFail("Second stall must end in an error") }
+        XCTAssertFalse(state.isRefreshingAudioEngine)
+        state.resetPracticeTransport()
+        state.startPractice()
+        XCTAssertEqual(state.practicePhase, .countIn(beatsRemaining: 8))
+        state.resetPracticeTransport()
+    }
+
+    @MainActor
+    private func makeTransportState(_ transport: ControllableTestMetronome) -> AppState {
+        let state = AppState(
+            clock: FixedHostClock(hostTime: 100),
+            converter: LinearHostTimeConverter(nanosecondsPerTick: 1),
+            practiceDataStore: DiscardingTransportTestStore(),
+            metronomeEngine: transport
+        )
+        state.practiceExercise = .basicRockGroove
+        state.practiceBPM = 120
+        return state
+    }
+
+    func testKickFreeScoringExcludesExpectedAndDetectedKicksFromEveryMetric() throws {
+        let pattern = PracticePattern(
+            name: "Open hat fixture",
+            bpm: 60,
+            beatsPerMeasure: 4,
+            measures: 1,
+            expectedEvents: [
+                ExpectedEvent(
+                    measure: 1,
+                    beat: 1,
+                    subdivision: 0,
+                    sessionTimeNanoseconds: 1_000_000_000,
+                    voice: .kick
+                ),
+                ExpectedEvent(
+                    measure: 1,
+                    beat: 1,
+                    subdivision: 0,
+                    sessionTimeNanoseconds: 1_000_000_000,
+                    voice: .openHiHat
+                ),
+                ExpectedEvent(
+                    measure: 1,
+                    beat: 2,
+                    subdivision: 0,
+                    sessionTimeNanoseconds: 2_000_000_000,
+                    voice: .snare
+                )
+            ]
+        )
+        var recording = PracticeSessionRecording(
+            pattern: pattern,
+            exerciseEndSessionTimeNanoseconds: 4_000_000_000,
+            scoringConfiguration: PracticeScoringConfiguration(gradeKicks: false)
+        )
+        recording.record(event(at: 1_005_000_000, voice: .openHiHat, source: .midi))
+        recording.record(event(at: 1_400_000_000, voice: .kick, source: .microphone))
+        recording.record(event(at: 2_010_000_000, voice: .snare, source: .midi))
+
+        XCTAssertEqual(recording.actualEvents.count, 3)
+        XCTAssertEqual(recording.scoredActualEventCount, 2)
+
+        let outcome = recording.finish()
+        XCTAssertFalse(outcome.effectiveScoringConfiguration.gradeKicks)
+        XCTAssertEqual(outcome.pattern.expectedEvents.count, 3)
+        XCTAssertEqual(outcome.actualEvents.count, 3)
+        XCTAssertEqual(outcome.matchResults.count, 2)
+        XCTAssertEqual(outcome.metrics.totalExpected, 2)
+        XCTAssertEqual(outcome.metrics.totalPlayed, 2)
+        XCTAssertEqual(outcome.metrics.correctCount, 2)
+        XCTAssertEqual(outcome.metrics.missedCount, 0)
+        XCTAssertEqual(outcome.metrics.extraCount, 0)
+        XCTAssertEqual(outcome.metrics.wrongVoiceCount, 0)
+        XCTAssertEqual(outcome.metrics.recall, 1)
+        XCTAssertEqual(outcome.metrics.precision, 1)
+        XCTAssertFalse(outcome.metrics.perVoice.contains { $0.voice == .kick })
+        XCTAssertFalse(outcome.timingTimeline.entries.contains {
+            $0.expectedVoice == .kick || $0.playedVoice == .kick
+        })
+
+        let summary = PracticeSessionSummary(outcome: outcome, exerciseKind: .builtIn)
+        var record = PracticeSessionRecord(summary: summary, outcome: outcome)
+        record.rescore()
+        XCTAssertEqual(record.metrics, outcome.metrics)
+        XCTAssertFalse(record.outcome.effectiveScoringConfiguration.gradeKicks)
+
+        let archive = PracticeDataArchive(sessions: [record.summary], sessionRecords: [record])
+        let decoded = try PracticeDataArchive.decodeAndValidate(archive.encodedJSON())
+        let decodedRecord = try XCTUnwrap(decoded.sessionRecords.first)
+        XCTAssertFalse(decodedRecord.outcome.effectiveScoringConfiguration.gradeKicks)
+        XCTAssertEqual(decodedRecord.metrics.totalExpected, 2)
+    }
+
+    func testLegacySessionRecordWithoutScoringConfigurationStillGradesKicks() throws {
+        let pattern = makePattern()
+        var recording = PracticeSessionRecording(
+            pattern: pattern,
+            exerciseEndSessionTimeNanoseconds: 1_250_000_000
+        )
+        recording.record(event(at: 1_005_000_000))
+        recording.record(event(at: 1_130_000_000))
+        let outcome = recording.finish()
+        let record = PracticeSessionRecord(
+            summary: PracticeSessionSummary(outcome: outcome, exerciseKind: .builtIn),
+            outcome: outcome
+        )
+        let encoded = try JSONEncoder().encode(record)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "scoringConfiguration")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        var decoded = try JSONDecoder().decode(PracticeSessionRecord.self, from: legacyData)
+        XCTAssertNil(decoded.scoringConfiguration)
+        XCTAssertTrue(decoded.outcome.effectiveScoringConfiguration.gradeKicks)
+        decoded.rescore()
+        XCTAssertEqual(decoded.metrics.totalExpected, 2)
+        XCTAssertEqual(decoded.metrics.correctCount, 2)
+    }
+
     func testRecordsOnlyExerciseWindowAndProducesOutcome() {
         let pattern = makePattern()
         var recording = PracticeSessionRecording(
@@ -394,6 +881,27 @@ final class PracticeSessionRecordingTests: XCTestCase {
     }
 
     @MainActor
+    func testResetPracticeTransportUnlocksLatchedRefreshState() throws {
+        let suiteName = "PracticeTransportResetTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let state = AppState(
+            clock: FixedHostClock(hostTime: 100),
+            converter: LinearHostTimeConverter(nanosecondsPerTick: 1),
+            practiceDataStore: UserDefaultsPracticeDataStore(defaults: defaults)
+        )
+        state.practicePhase = .countIn(beatsRemaining: 8)
+        state.isRefreshingAudioEngine = true
+
+        state.resetPracticeTransport()
+
+        XCTAssertEqual(state.practicePhase, .idle)
+        XCTAssertFalse(state.isRefreshingAudioEngine)
+        XCTAssertEqual(state.practiceRecordedHitCount, 0)
+        XCTAssertNotNil(state.audioEngineRecoveryMessage)
+    }
+
+    @MainActor
     func testAppStateCreatesUpdatesCopiesLoadsAndDeletesSavedCustomExercises() throws {
         let suiteName = "SavedCustomExerciseStateTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -456,6 +964,106 @@ final class PracticeSessionRecordingTests: XCTestCase {
         state.timingAlignmentPhase = .starting
         state.handleTimingAlignmentMetronomeStatus(.error("Core Audio restart failed"))
         XCTAssertEqual(state.timingAlignmentPhase, .error("Core Audio restart failed"))
+    }
+
+    @MainActor
+    func testTimingAlignmentRetryRestartsTransportWithoutAppRelaunch() {
+        let transport = ControllableTestMetronome()
+        let state = AppState(
+            clock: FixedHostClock(hostTime: 100),
+            converter: LinearHostTimeConverter(nanosecondsPerTick: 1),
+            practiceDataStore: DiscardingTransportTestStore(),
+            metronomeEngine: transport
+        )
+        state.midiDevices = [MIDIInputDevice(id: 42, endpoint: 0, name: "Test e-kit")]
+        state.selectedMIDIInputID = 42
+        state.timingAlignmentPhase = .error("Previous run failed")
+
+        state.retryTimingAlignment()
+
+        XCTAssertEqual(transport.stopCount, 1)
+        XCTAssertEqual(transport.startCount, 1)
+        XCTAssertEqual(state.timingAlignmentPhase, .starting)
+
+        state.handleTimingAlignmentMetronomeStatus(.running("Test output"))
+        XCTAssertEqual(state.timingAlignmentPhase, .countIn(beatsRemaining: AppState.countInBeats))
+
+        state.timingAlignmentPhase = .error("Try again")
+        state.refreshAudioEngineAndRetryTimingAlignment()
+        XCTAssertEqual(transport.stopCount, 2)
+        XCTAssertEqual(transport.startCount, 2)
+        XCTAssertEqual(state.timingAlignmentPhase, .starting)
+    }
+
+    func testGhostSessionArchiveRescoresAndUngradedKicksDoNotAffectDynamics() throws {
+        var definition = CustomMeasureDefinition()
+        definition.toggle(slot: 0, voice: .snare)
+        definition.toggleGhost(slot: 4, voice: .snare)
+        definition.toggleGhost(slot: 8, voice: .kick)
+        let pattern = try KickPatternGenerator().generate(configuration: KickPatternConfiguration(
+            bpm: 120, customMeasure: definition
+        ))
+        var recording = PracticeSessionRecording(
+            pattern: pattern, exerciseEndSessionTimeNanoseconds: pattern.exactDurationNanoseconds,
+            scoringConfiguration: PracticeScoringConfiguration(gradeKicks: false)
+        )
+        for expected in pattern.expectedEvents where expected.voice == .snare {
+            recording.record(PerformanceEvent(
+                source: .midi, voice: expected.voice,
+                hostTime: UInt64(expected.sessionTimeNanoseconds),
+                sessionTimeNanoseconds: expected.sessionTimeNanoseconds,
+                velocity: (expected.isGhost ? 40.0 : 90.0) / 127,
+                rawMetadata: .simulated(label: "ghost archive fixture")
+            ))
+        }
+        let outcome = recording.finish()
+        let summary = PracticeSessionSummary(outcome: outcome, exerciseKind: .custom)
+        XCTAssertTrue(summary.isClean)
+        XCTAssertEqual(summary.ghostMetrics?.expectedCount, 1)
+        let record = PracticeSessionRecord(summary: summary, outcome: outcome)
+        let archive = PracticeDataArchive(sessions: [summary], sessionRecords: [record])
+        let decoded = try PracticeDataArchive.decodeAndValidate(archive.encodedJSON())
+        var restored = try XCTUnwrap(decoded.sessionRecords.first)
+        restored.rescore()
+        XCTAssertEqual(restored.summary.ghostMetrics, summary.ghostMetrics)
+        XCTAssertEqual(restored.pattern.expectedEvents, pattern.expectedEvents)
+        XCTAssertTrue(restored.summary.isClean)
+
+        let badActual = outcome.actualEvents.map { actual in
+            PerformanceEvent(
+                source: .midi, voice: actual.voice, hostTime: actual.hostTime,
+                sessionTimeNanoseconds: actual.sessionTimeNanoseconds,
+                velocity: 90.0 / 127, rawMetadata: .simulated(label: "flat dynamics")
+            )
+        }
+        var badRecording = PracticeSessionRecording(
+            pattern: pattern, exerciseEndSessionTimeNanoseconds: pattern.exactDurationNanoseconds,
+            scoringConfiguration: PracticeScoringConfiguration(gradeKicks: false)
+        )
+        badActual.forEach { badRecording.record($0) }
+        let badOutcome = badRecording.finish()
+        XCTAssertEqual(badOutcome.metrics.recall, 1)
+        XCTAssertFalse(PracticeSessionSummary(outcome: badOutcome, exerciseKind: .custom).isClean)
+    }
+
+    func testLegacyArchiveWithoutGhostFieldsKeepsHistoryAndNoteMeaning() throws {
+        let pattern = makePattern()
+        let recording = PracticeSessionRecording(
+            pattern: pattern, exerciseEndSessionTimeNanoseconds: pattern.exactDurationNanoseconds
+        )
+        let outcome = recording.finish()
+        let summary = PracticeSessionSummary(outcome: outcome, exerciseKind: .builtIn)
+        let archive = PracticeDataArchive(
+            schemaVersion: 7, sessions: [summary],
+            sessionRecords: [PracticeSessionRecord(summary: summary, outcome: outcome)]
+        )
+        let decoded = try PracticeDataArchive.decodeAndValidate(JSONEncoder().encode(archive))
+        XCTAssertNil(decoded.sessions[0].ghostMetrics)
+        XCTAssertTrue(decoded.sessionRecords[0].pattern.expectedEvents.allSatisfy { !$0.isGhost })
+        let legacyHit = Data(#"{"slot":0,"voice":"snare","allowedVoices":[],"accent":true}"#.utf8)
+        let hit = try JSONDecoder().decode(PracticeExerciseHit.self, from: legacyHit)
+        XCTAssertTrue(hit.isAccent)
+        XCTAssertFalse(hit.isGhost)
     }
 
     private func makePattern() -> PracticePattern {
@@ -535,4 +1143,47 @@ final class PracticeSessionRecordingTests: XCTestCase {
             rawMetadata: .metronome(beat: 1, subdivision: 0)
         )
     }
+}
+
+private struct DiscardingTransportTestStore: PracticeDataPersisting {
+    func load() throws -> PracticeDataArchive { PracticeDataArchive() }
+    func save(_ archive: PracticeDataArchive) throws {}
+}
+
+@MainActor
+private final class TestPlaybackListener: ExternalPlaybackListening {
+    var onsets: [@MainActor (UInt64) -> Void] = []
+    var errors: [@MainActor (String) -> Void] = []
+    var stopCount = 0
+    var shouldFail = false
+    func sources() async throws -> [PlaybackAudioSource] { [PlaybackAudioSource(id: 42, name: "Test browser")] }
+    func start(sourceID: Int32, thresholdDBFS: Double,
+               onLevel: @escaping @MainActor (Double, Bool) -> Void,
+               onOnset: @escaping @MainActor (UInt64) -> Void,
+               onError: @escaping @MainActor (String) -> Void) async throws {
+        if shouldFail { throw NSError(domain: "Permission denied", code: 1) }
+        onsets.append(onOnset)
+        errors.append(onError)
+    }
+    func stop() { stopCount += 1 }
+}
+
+private final class ControllableTestMetronome: MetronomeControlling {
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+    private var completions: [@Sendable () -> Void] = []
+    func startMonitoring() {}
+    func select(deviceID: AudioDeviceID?) {}
+    func start(bpm: Double) { startCount += 1 }
+    func stop() { stopCount += 1 }
+    func rebuildAudioGraph(completion: @escaping @Sendable () -> Void) { completions.append(completion) }
+    func completeRefresh(at index: Int) { completions[index]() }
+    func updateBPM(_ bpm: Double) {}
+    func updateSound(_ sound: MetronomeSound) {}
+    func updateGainDecibels(_ gain: Double) {}
+    func updateLimiter(enabled: Bool, ceilingDBFS: Double) {}
+    func updateKickMonitoring(enabled: Bool, sound: KickMonitorSound, gainDecibels: Double,
+                              velocitySensitive: Bool, retriggerMilliseconds: Double, startAudioIfNeeded: Bool) {}
+    func triggerKick(velocity: Double, eventHostTime: UInt64, respectsRetriggerLockout: Bool) {}
+    func followTempoMap(startPresentationHostTime: UInt64, referenceBeats: [PracticeReferenceBeat]) {}
 }

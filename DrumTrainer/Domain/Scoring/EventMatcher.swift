@@ -1,10 +1,20 @@
 import Foundation
 
+struct EventTimingCompensationKey: Hashable, Sendable {
+    let source: EventSource
+    let voice: DrumVoice
+}
+
 struct EventMatcher: Sendable {
     private let sourceTimingCompensationNanoseconds: [EventSource: Int64]
+    private let voiceTimingCompensationNanoseconds: [EventTimingCompensationKey: Int64]
 
-    init(sourceTimingCompensationNanoseconds: [EventSource: Int64] = [:]) {
+    init(
+        sourceTimingCompensationNanoseconds: [EventSource: Int64] = [:],
+        voiceTimingCompensationNanoseconds: [EventTimingCompensationKey: Int64] = [:]
+    ) {
         self.sourceTimingCompensationNanoseconds = sourceTimingCompensationNanoseconds
+        self.voiceTimingCompensationNanoseconds = voiceTimingCompensationNanoseconds
     }
 
     func match(expected: [ExpectedEvent], actual: [PerformanceEvent]) -> [MatchResult] {
@@ -235,7 +245,10 @@ struct EventMatcher: Sendable {
     }
 
     private func applyingTimingCompensation(to event: PerformanceEvent) -> PerformanceEvent {
-        let correction = sourceTimingCompensationNanoseconds[event.source] ?? 0
+        let voiceKey = EventTimingCompensationKey(source: event.source, voice: event.voice)
+        let correction = voiceTimingCompensationNanoseconds[voiceKey]
+            ?? sourceTimingCompensationNanoseconds[event.source]
+            ?? 0
         let correctedTime: Int64
         let (value, overflow) = event.sessionTimeNanoseconds.subtractingReportingOverflow(correction)
         if overflow {

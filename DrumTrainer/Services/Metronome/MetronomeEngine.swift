@@ -45,6 +45,79 @@ enum MetronomeSound: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
+enum MetronomeGain {
+    static let minimumDecibels = -36.0
+    static let maximumDecibels = 24.0
+    static let extremeBoostThresholdDecibels = 12.0
+
+    static func clamped(_ decibels: Double) -> Double {
+        min(max(decibels, minimumDecibels), maximumDecibels)
+    }
+
+    static func isExtremeBoost(_ decibels: Double) -> Bool {
+        decibels > extremeBoostThresholdDecibels
+    }
+}
+
+enum KickMonitorSound: String, CaseIterable, Codable, Identifiable, Sendable {
+    case studioPunch
+    case deepAcoustic
+    case tightTrigger
+    case electronicSub
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .studioPunch: "Studio punch"
+        case .deepAcoustic: "Deep acoustic"
+        case .tightTrigger: "Tight trigger"
+        case .electronicSub: "Electronic sub"
+        }
+    }
+
+    var guidance: String {
+        switch self {
+        case .studioPunch: "Balanced attack and body, similar to a processed e-kit kick"
+        case .deepAcoustic: "Rounder shell tone with a longer low-end decay"
+        case .tightTrigger: "Short, clicky attack for fast double-kick passages"
+        case .electronicSub: "Sustained electronic low end with a softer attack"
+        }
+    }
+}
+
+enum KickMonitorSource: String, CaseIterable, Codable, Identifiable, Sendable {
+    case both
+    case midi
+    case microphone
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .both: "MIDI + microphone"
+        case .midi: "E-kit MIDI"
+        case .microphone: "Kick microphone"
+        }
+    }
+
+    func accepts(_ source: EventSource) -> Bool {
+        switch self {
+        case .both: source == .midi || source == .microphone
+        case .midi: source == .midi
+        case .microphone: source == .microphone
+        }
+    }
+}
+
+enum KickMonitorDynamics {
+    static func gain(for velocity: Double, isVelocitySensitive: Bool) -> Double {
+        guard isVelocitySensitive else { return 1 }
+        let bounded = min(max(velocity, 0), 1)
+        return 0.16 + 0.84 * pow(bounded, 0.72)
+    }
+}
+
 struct AppOutputLevel: Equatable, Sendable {
     let peakDBFS: Double
     let rmsDBFS: Double
@@ -102,6 +175,7 @@ enum MetronomeStatus: Equatable, Sendable {
     case stopped
     case ready
     case running(String)
+    case monitoringKicks(String)
     case disconnected(String)
     case error(String)
 
@@ -110,6 +184,7 @@ enum MetronomeStatus: Equatable, Sendable {
         case .stopped: "Metronome is stopped"
         case .ready: "Ready"
         case let .running(name): "Playing through \(name)"
+        case let .monitoringKicks(name): "Kick monitoring through \(name)"
         case let .disconnected(name): "\(name) disconnected; choose another output"
         case let .error(message): message
         }
@@ -165,7 +240,32 @@ enum MetronomeTimeline {
     }
 }
 
-final class MetronomeEngine: @unchecked Sendable {
+protocol MetronomeControlling: AnyObject {
+    func startMonitoring()
+    func select(deviceID: AudioDeviceID?)
+    func start(bpm: Double)
+    func stop()
+    func rebuildAudioGraph(completion: @escaping @Sendable () -> Void)
+    func updateBPM(_ bpm: Double)
+    func updateSound(_ sound: MetronomeSound)
+    func updateGainDecibels(_ gain: Double)
+    func updateLimiter(enabled: Bool, ceilingDBFS: Double)
+    func updateKickMonitoring(enabled: Bool, sound: KickMonitorSound, gainDecibels: Double,
+                              velocitySensitive: Bool, retriggerMilliseconds: Double, startAudioIfNeeded: Bool)
+    func triggerKick(velocity: Double, eventHostTime: UInt64, respectsRetriggerLockout: Bool)
+    func followTempoMap(startPresentationHostTime: UInt64, referenceBeats: [PracticeReferenceBeat])
+}
+
+extension MetronomeControlling {
+    func triggerKick(velocity: Double, eventHostTime: UInt64) {
+        triggerKick(velocity: velocity, eventHostTime: eventHostTime, respectsRetriggerLockout: true)
+    }
+}
+
+final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
+    private static let kickPolyphony = 6
+    private static let kickVelocitySteps = 16
+
     typealias DevicesHandler = @Sendable ([AudioOutputDevice]) -> Void
     typealias StatusHandler = @Sendable (MetronomeStatus) -> Void
     typealias TickHandler = @Sendable (MetronomeTick) -> Void
@@ -181,6 +281,8 @@ final class MetronomeEngine: @unchecked Sendable {
     private let onOutputLatencyChanged: OutputLatencyHandler
     private var engine = AVAudioEngine()
     private var player = AVAudioPlayerNode()
+    private var kickPlayers = (0..<MetronomeEngine.kickPolyphony).map { _ in AVAudioPlayerNode() }
+    private var appMixer = AVAudioMixerNode()
     private var limiter = MetronomeEngine.makeLimiter()
     private let engineQueue = DispatchQueue(label: "DrumTrainer.MetronomeEngine", qos: .userInteractive)
     private let listenerQueue = DispatchQueue(label: "DrumTrainer.MetronomeDeviceListener")
@@ -192,6 +294,11 @@ final class MetronomeEngine: @unchecked Sendable {
     private var bpm = 120.0
     private var sound: MetronomeSound = .cuttingElectronic
     private var gainDecibels = -3.0
+    private var kickMonitoringEnabled = false
+    private var kickMonitorSound: KickMonitorSound = .studioPunch
+    private var kickMonitorGainDecibels = -6.0
+    private var kickMonitorVelocitySensitive = true
+    private var kickMonitorRetriggerMilliseconds = 30.0
     private var limiterEnabled = true
     private var limiterCeilingDBFS = -1.0
     private var clickFormat: AVAudioFormat?
@@ -202,6 +309,9 @@ final class MetronomeEngine: @unchecked Sendable {
     private var tickIndex = 0
     private var normalClick: AVAudioPCMBuffer?
     private var accentClick: AVAudioPCMBuffer?
+    private var kickBuffers: [AVAudioPCMBuffer] = []
+    private var nextKickPlayerIndex = 0
+    private var lastKickEventHostTime: UInt64?
     private var outputPresentationLatencyNanoseconds: UInt64 = 0
     private var schedulingHealth = MetronomeSchedulingHealth()
     private let hostTimeConverter = CoreAudioHostTimeConverter()
@@ -224,13 +334,16 @@ final class MetronomeEngine: @unchecked Sendable {
         self.onOutputLevelChanged = onOutputLevelChanged
         self.onOutputLatencyChanged = onOutputLatencyChanged
         engine.attach(player)
+        kickPlayers.forEach(engine.attach)
+        engine.attach(appMixer)
         engine.attach(limiter)
     }
 
     deinit {
         timer?.cancel()
-        player.stop()
         engine.stop()
+        player.stop()
+        kickPlayers.forEach { $0.stop() }
         if let deviceListener {
             var address = Self.devicesPropertyAddress
             AudioObjectRemovePropertyListenerBlock(
@@ -245,18 +358,28 @@ final class MetronomeEngine: @unchecked Sendable {
     func startMonitoring() {
         refreshDevices()
         installDeviceListenerIfNeeded()
-        onStatusChanged(.ready)
+        engineQueue.async { [weak self] in
+            guard let self else { return }
+            if kickMonitoringEnabled, engine.isRunning {
+                let outputName = selectedDeviceName ?? Self.defaultOutputDeviceName() ?? "System Default"
+                onStatusChanged(.monitoringKicks(outputName))
+            } else {
+                onStatusChanged(.ready)
+            }
+        }
     }
 
     func select(deviceID: AudioDeviceID?) {
         engineQueue.async { [weak self] in
             guard let self else { return }
             let wasRunning = isRunning
-            stopPlayback(publishStatus: false)
+            stopAllAudio(publishStatus: false)
             selectedDeviceID = deviceID
             selectedDeviceName = Self.availableDevices().first(where: { $0.id == deviceID })?.name
             if wasRunning {
                 beginPlayback()
+            } else if kickMonitoringEnabled {
+                beginKickMonitoringOnly()
             } else {
                 onStatusChanged(.ready)
             }
@@ -267,14 +390,26 @@ final class MetronomeEngine: @unchecked Sendable {
         engineQueue.async { [weak self] in
             guard let self else { return }
             self.bpm = min(max(bpm, 40), 240)
-            stopPlayback(publishStatus: false)
+            // AppState never intentionally starts a second exercise while one is
+            // active. Avoid stopping every player on an already-idle graph here:
+            // AVAudioPlayerNode.stop() can wait forever after a USB route change,
+            // which previously stranded this serial queue before beginPlayback().
+            if isRunning {
+                stopMetronomePlayback(publishStatus: false)
+            } else {
+                generation += 1
+                referenceBeats = nil
+                referenceBeatCursor = 0
+                timer?.cancel()
+                timer = nil
+            }
             beginPlayback()
         }
     }
 
     func stop() {
         engineQueue.async { [weak self] in
-            self?.stopPlayback(publishStatus: true)
+            self?.stopMetronomePlayback(publishStatus: true)
         }
     }
 
@@ -283,24 +418,35 @@ final class MetronomeEngine: @unchecked Sendable {
     func rebuildAudioGraph(completion: @escaping @Sendable () -> Void = {}) {
         engineQueue.async { [weak self] in
             guard let self else { return }
-            stopPlayback(publishStatus: false)
+            stopAllAudio(publishStatus: false)
             removeOutputMeterIfNeeded()
 
             engine = AVAudioEngine()
             player = AVAudioPlayerNode()
+            kickPlayers = (0..<Self.kickPolyphony).map { _ in AVAudioPlayerNode() }
+            appMixer = AVAudioMixerNode()
             limiter = Self.makeLimiter()
             engine.attach(player)
+            kickPlayers.forEach(engine.attach)
+            engine.attach(appMixer)
             engine.attach(limiter)
 
             clickFormat = nil
             normalClick = nil
             accentClick = nil
+            kickBuffers = []
+            nextKickPlayerIndex = 0
+            lastKickEventHostTime = nil
             outputPresentationLatencyNanoseconds = 0
             schedulingHealth = MetronomeSchedulingHealth()
             onOutputLatencyChanged(0)
             onHealthChanged(schedulingHealth)
             onDevicesChanged(Self.availableDevices())
-            onStatusChanged(.ready)
+            if kickMonitoringEnabled {
+                beginKickMonitoringOnly()
+            } else {
+                onStatusChanged(.ready)
+            }
             completion()
         }
     }
@@ -310,7 +456,7 @@ final class MetronomeEngine: @unchecked Sendable {
             guard let self else { return }
             self.bpm = min(max(bpm, 40), 240)
             guard isRunning else { return }
-            stopPlayback(publishStatus: false)
+            stopMetronomePlayback(publishStatus: false)
             beginPlayback()
         }
     }
@@ -326,8 +472,69 @@ final class MetronomeEngine: @unchecked Sendable {
     func updateGainDecibels(_ gainDecibels: Double) {
         engineQueue.async { [weak self] in
             guard let self else { return }
-            self.gainDecibels = min(max(gainDecibels, -36), 12)
+            self.gainDecibels = MetronomeGain.clamped(gainDecibels)
             rebuildClickBuffers()
+        }
+    }
+
+    func updateKickMonitoring(
+        enabled: Bool,
+        sound: KickMonitorSound,
+        gainDecibels: Double,
+        velocitySensitive: Bool,
+        retriggerMilliseconds: Double,
+        startAudioIfNeeded: Bool
+    ) {
+        engineQueue.async { [weak self] in
+            guard let self else { return }
+            let wasEnabled = kickMonitoringEnabled
+            kickMonitoringEnabled = enabled
+            kickMonitorSound = sound
+            kickMonitorGainDecibels = min(max(gainDecibels, -36), 6)
+            kickMonitorVelocitySensitive = velocitySensitive
+            kickMonitorRetriggerMilliseconds = min(max(retriggerMilliseconds, 10), 150)
+            rebuildKickBuffers()
+
+            if enabled, startAudioIfNeeded, !engine.isRunning {
+                beginKickMonitoringOnly()
+            } else if !enabled, wasEnabled, !isRunning {
+                stopAllAudio(publishStatus: true)
+            }
+        }
+    }
+
+    func triggerKick(
+        velocity: Double,
+        eventHostTime: UInt64,
+        respectsRetriggerLockout: Bool = true
+    ) {
+        engineQueue.async { [weak self] in
+            guard let self, kickMonitoringEnabled else { return }
+            let boundedHostTime = eventHostTime == 0 ? AudioGetCurrentHostTime() : eventHostTime
+            if respectsRetriggerLockout,
+               let lastKickEventHostTime,
+               boundedHostTime <= lastKickEventHostTime
+                    || AudioConvertHostTimeToNanos(boundedHostTime - lastKickEventHostTime)
+                        < UInt64((kickMonitorRetriggerMilliseconds * 1_000_000).rounded()) {
+                return
+            }
+            lastKickEventHostTime = boundedHostTime
+
+            if !engine.isRunning { beginKickMonitoringOnly() }
+            guard engine.isRunning, !kickBuffers.isEmpty else { return }
+
+            let dynamics = KickMonitorDynamics.gain(
+                for: velocity,
+                isVelocitySensitive: kickMonitorVelocitySensitive
+            )
+            let bufferIndex = min(
+                max(Int((dynamics * Double(Self.kickVelocitySteps - 1)).rounded()), 0),
+                kickBuffers.count - 1
+            )
+            let kickPlayer = kickPlayers[nextKickPlayerIndex]
+            nextKickPlayerIndex = (nextKickPlayerIndex + 1) % kickPlayers.count
+            if !kickPlayer.isPlaying { kickPlayer.play() }
+            kickPlayer.scheduleBuffer(kickBuffers[bufferIndex], at: nil, options: .interrupts)
         }
     }
 
@@ -366,22 +573,7 @@ final class MetronomeEngine: @unchecked Sendable {
 
     private func beginPlayback() {
         do {
-            try configureEngine()
-            try engine.start()
-            player.play()
-
-            // The player's downstream presentation latency includes the mixer/effect chain
-            // plus the selected output hardware. This is the path the scheduled click follows.
-            let downstreamLatency = max(
-                player.outputPresentationLatency,
-                engine.mainMixerNode.outputPresentationLatency,
-                engine.outputNode.presentationLatency
-            )
-            outputPresentationLatencyNanoseconds = MetronomeTimeline.outputLatencyNanoseconds(
-                downstreamSeconds: downstreamLatency,
-                hardwareSeconds: engine.outputNode.presentationLatency
-            )
-            onOutputLatencyChanged(Double(outputPresentationLatencyNanoseconds) / 1_000_000)
+            try startAudioGraph()
 
             isRunning = true
             generation += 1
@@ -397,9 +589,47 @@ final class MetronomeEngine: @unchecked Sendable {
             let outputName = selectedDeviceName ?? Self.defaultOutputDeviceName() ?? "System Default"
             onStatusChanged(.running(outputName))
         } catch {
-            stopPlayback(publishStatus: false)
+            stopAllAudio(publishStatus: false)
             onStatusChanged(.error("Could not start metronome: \(error.localizedDescription)"))
         }
+    }
+
+    private func beginKickMonitoringOnly() {
+        guard kickMonitoringEnabled else { return }
+        do {
+            try startAudioGraph()
+            isRunning = false
+            let outputName = selectedDeviceName ?? Self.defaultOutputDeviceName() ?? "System Default"
+            onStatusChanged(.monitoringKicks(outputName))
+        } catch {
+            stopAllAudio(publishStatus: false)
+            onStatusChanged(.error("Could not start kick monitoring: \(error.localizedDescription)"))
+        }
+    }
+
+    private func startAudioGraph() throws {
+        // Replays reuse a healthy, silently rendering graph. Route changes and
+        // explicit recovery still stop it, which forces a full configuration here.
+        if !engine.isRunning {
+            try configureEngine()
+            try engine.start()
+        }
+        player.play()
+        kickPlayers.forEach { $0.play() }
+
+        // Both click and kick-monitor players share the same mixer, limiter, and selected
+        // hardware output. This latency is presentation-only; a live kick cannot be scheduled
+        // ahead of an input event that has not happened yet.
+        let downstreamLatency = max(
+            appMixer.outputPresentationLatency,
+            engine.mainMixerNode.outputPresentationLatency,
+            engine.outputNode.presentationLatency
+        )
+        outputPresentationLatencyNanoseconds = MetronomeTimeline.outputLatencyNanoseconds(
+            downstreamSeconds: downstreamLatency,
+            hardwareSeconds: engine.outputNode.presentationLatency
+        )
+        onOutputLatencyChanged(Double(outputPresentationLatencyNanoseconds) / 1_000_000)
     }
 
     private func configureEngine() throws {
@@ -407,16 +637,20 @@ final class MetronomeEngine: @unchecked Sendable {
         engine.stop()
         engine.reset()
         engine.disconnectNodeOutput(player)
+        kickPlayers.forEach(engine.disconnectNodeOutput)
+        engine.disconnectNodeOutput(appMixer)
         engine.disconnectNodeOutput(limiter)
 
-        if let selectedDeviceID {
-            guard Self.availableDevices().contains(where: { $0.id == selectedDeviceID }) else {
+        // Resolve System Default explicitly: an existing output unit can otherwise
+        // remain bound to the previously selected USB interface.
+        if let outputDeviceID = selectedDeviceID ?? Self.defaultOutputDeviceID() {
+            guard Self.availableDevices().contains(where: { $0.id == outputDeviceID }) else {
                 throw MetronomeEngineError.outputUnavailable(selectedDeviceName ?? "Selected output")
             }
             guard let audioUnit = engine.outputNode.audioUnit else {
                 throw MetronomeEngineError.missingAudioUnit
             }
-            var mutableDeviceID = selectedDeviceID
+            var mutableDeviceID = outputDeviceID
             let status = AudioUnitSetProperty(
                 audioUnit,
                 kAudioOutputUnitProperty_CurrentDevice,
@@ -436,11 +670,24 @@ final class MetronomeEngine: @unchecked Sendable {
 
         clickFormat = monoFormat
         rebuildClickBuffers()
+        rebuildKickBuffers()
         guard normalClick != nil, accentClick != nil else { throw MetronomeEngineError.invalidFormat }
+        guard !kickMonitoringEnabled || !kickBuffers.isEmpty else { throw MetronomeEngineError.invalidFormat }
 
         configureLimiter()
-        engine.connect(player, to: limiter, format: monoFormat)
+        engine.connect(player, to: appMixer, fromBus: 0, toBus: 0, format: monoFormat)
+        for (index, kickPlayer) in kickPlayers.enumerated() {
+            engine.connect(
+                kickPlayer,
+                to: appMixer,
+                fromBus: 0,
+                toBus: AVAudioNodeBus(index + 1),
+                format: monoFormat
+            )
+        }
+        engine.connect(appMixer, to: limiter, format: monoFormat)
         engine.connect(limiter, to: engine.mainMixerNode, format: monoFormat)
+        appMixer.outputVolume = 1
         engine.mainMixerNode.outputVolume = 1
         installOutputMeterIfNeeded()
         engine.prepare()
@@ -504,6 +751,19 @@ final class MetronomeEngine: @unchecked Sendable {
             isAccent: true,
             gainDecibels: gainDecibels
         )
+    }
+
+    private func rebuildKickBuffers() {
+        guard let clickFormat else { return }
+        kickBuffers = (0..<Self.kickVelocitySteps).compactMap { step in
+            let normalizedVelocity = Double(step) / Double(Self.kickVelocitySteps - 1)
+            return Self.makeKick(
+                format: clickFormat,
+                sound: kickMonitorSound,
+                gainDecibels: kickMonitorGainDecibels,
+                dynamicsGain: normalizedVelocity
+            )
+        }
     }
 
     private func installOutputMeterIfNeeded() {
@@ -648,7 +908,7 @@ final class MetronomeEngine: @unchecked Sendable {
         }
     }
 
-    private func stopPlayback(publishStatus: Bool) {
+    private func stopMetronomePlayback(publishStatus: Bool) {
         isRunning = false
         generation += 1
         referenceBeats = nil
@@ -656,7 +916,41 @@ final class MetronomeEngine: @unchecked Sendable {
         timer?.cancel()
         timer = nil
         player.stop()
+        if kickMonitoringEnabled {
+            if !engine.isRunning {
+                beginKickMonitoringOnly()
+            } else {
+                if !kickPlayers.allSatisfy(\.isPlaying) {
+                    kickPlayers.forEach { if !$0.isPlaying { $0.play() } }
+                }
+                if publishStatus {
+                    let outputName = selectedDeviceName ?? Self.defaultOutputDeviceName() ?? "System Default"
+                    onStatusChanged(.monitoringKicks(outputName))
+                }
+            }
+        } else {
+            // Kick players render silence when they have no scheduled buffers.
+            // Keep them alive with the graph instead of stopping six nodes on
+            // every exercise boundary. One of these stop calls was the observed
+            // permanent Core Audio deadlock behind the stuck count-in.
+            onOutputLevelChanged(.silence)
+            if publishStatus { onStatusChanged(.stopped) }
+        }
+    }
+
+    private func stopAllAudio(publishStatus: Bool) {
+        isRunning = false
+        generation += 1
+        referenceBeats = nil
+        referenceBeatCursor = 0
+        timer?.cancel()
+        timer = nil
+        // Stop hardware rendering before touching individual player nodes. A
+        // node stop while the USB render thread is active can synchronously wait
+        // on AVFAudio's internal queue forever.
         engine.stop()
+        player.stop()
+        kickPlayers.forEach { $0.stop() }
         onOutputLevelChanged(.silence)
         if publishStatus { onStatusChanged(.stopped) }
     }
@@ -668,7 +962,7 @@ final class MetronomeEngine: @unchecked Sendable {
             guard let self, let selectedDeviceID else { return }
             guard !devices.contains(where: { $0.id == selectedDeviceID }) else { return }
             let name = selectedDeviceName ?? "Selected output"
-            stopPlayback(publishStatus: false)
+            stopAllAudio(publishStatus: false)
             onStatusChanged(.disconnected(name))
         }
     }
@@ -744,6 +1038,66 @@ final class MetronomeEngine: @unchecked Sendable {
         return buffer
     }
 
+    private static func makeKick(
+        format: AVAudioFormat,
+        sound: KickMonitorSound,
+        gainDecibels: Double,
+        dynamicsGain: Double
+    ) -> AVAudioPCMBuffer? {
+        let duration: Double = switch sound {
+        case .studioPunch: 0.30
+        case .deepAcoustic: 0.42
+        case .tightTrigger: 0.18
+        case .electronicSub: 0.50
+        }
+        let frameCount = AVAudioFrameCount(format.sampleRate * duration)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
+              let samples = buffer.floatChannelData?[0] else { return nil }
+        buffer.frameLength = frameCount
+
+        let outputGain = pow(10, min(max(gainDecibels, -36), 6) / 20)
+            * min(max(dynamicsGain, 0), 1)
+        let parameters: (
+            startFrequency: Double,
+            endFrequency: Double,
+            bodyDecay: Double,
+            clickAmount: Double,
+            harmonicAmount: Double
+        ) = switch sound {
+        case .studioPunch:
+            (112, 48, 12, 0.26, 0.16)
+        case .deepAcoustic:
+            (92, 42, 8, 0.13, 0.20)
+        case .tightTrigger:
+            (138, 57, 21, 0.42, 0.12)
+        case .electronicSub:
+            (84, 36, 6.5, 0.07, 0.06)
+        }
+        var phase = 0.0
+        var noiseState: UInt32 = 0x6D2B_79F5
+
+        for frame in 0..<Int(frameCount) {
+            let time = Double(frame) / format.sampleRate
+            let progress = min(time / duration, 1)
+            let sweep = pow(progress, sound == .electronicSub ? 0.28 : 0.18)
+            let frequency = parameters.startFrequency
+                + (parameters.endFrequency - parameters.startFrequency) * sweep
+            phase += 2 * .pi * frequency / format.sampleRate
+            noiseState = noiseState &* 1_664_525 &+ 1_013_904_223
+            let noise = Double(Int32(bitPattern: noiseState)) / Double(Int32.max)
+
+            let body = sin(phase) * exp(-time * parameters.bodyDecay)
+            let harmonic = sin(phase * 2.03)
+                * exp(-time * parameters.bodyDecay * 1.7)
+                * parameters.harmonicAmount
+            let beater = noise * exp(-time * 145) * parameters.clickAmount
+            let attack = min(time / 0.0015, 1)
+            let tailFade = progress > 0.92 ? max((1 - progress) / 0.08, 0) : 1
+            samples[frame] = Float((0.78 * body + harmonic + beater) * attack * tailFade * outputGain)
+        }
+        return buffer
+    }
+
     private static var devicesPropertyAddress: AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -775,6 +1129,10 @@ final class MetronomeEngine: @unchecked Sendable {
     }
 
     private static func defaultOutputDeviceName() -> String? {
+        defaultOutputDeviceID().flatMap { stringProperty(kAudioObjectPropertyName, for: $0) }
+    }
+
+    private static func defaultOutputDeviceID() -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -785,7 +1143,7 @@ final class MetronomeEngine: @unchecked Sendable {
         guard AudioObjectGetPropertyData(
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &byteCount, &deviceID
         ) == noErr else { return nil }
-        return stringProperty(kAudioObjectPropertyName, for: deviceID)
+        return deviceID == 0 ? nil : deviceID
     }
 
     private static func hasOutputStreams(_ deviceID: AudioDeviceID) -> Bool {

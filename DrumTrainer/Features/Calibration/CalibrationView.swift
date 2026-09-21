@@ -31,30 +31,24 @@ struct CalibrationView: View {
     private var timingAlignmentWorkflow: some View {
         GroupBox("Hit timing alignment") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Measures the complete path between the audible click and a raw hit: the selected headphone output, your typical response, and the chosen input. The saved correction is scoped to that exact input/output pairing.")
+                Text("Measures the complete path between the audible click and a raw hit. One shared correction is saved for the entire e-kit MIDI path; a microphone kick keeps its own separate correction.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
                 HStack(spacing: 16) {
-                    Picker("Input path", selection: $state.timingAlignmentSource) {
+                    Picker("Input path", selection: Binding(
+                        get: { state.timingAlignmentSource },
+                        set: { state.selectTimingAlignmentSource($0) }
+                    )) {
                         ForEach(TimingAlignmentSource.allCases) { source in
                             Text(source.displayName).tag(source)
                         }
                     }
                     .frame(width: 230)
-                    .disabled(state.timingAlignmentPhase.isActive)
+                    .disabled(state.timingAlignmentPhase.locksConfiguration)
 
                     if state.timingAlignmentSource == .midi {
-                        Picker("Drum to play", selection: $state.timingAlignmentVoice) {
-                            ForEach(
-                                DrumVoice.allCases.filter { $0 != .metronome && $0 != .unknown },
-                                id: \.self
-                            ) { voice in
-                                Text(voice.displayName).tag(voice)
-                            }
-                        }
-                        .frame(width: 220)
-                        .disabled(state.timingAlignmentPhase.isActive)
+                        Label("Shared across all e-kit drums", systemImage: "point.3.connected.trianglepath.dotted")
                     } else {
                         Label("Play kick", systemImage: "circle.inset.filled")
                     }
@@ -77,6 +71,10 @@ struct CalibrationView: View {
                 }
                 .font(.callout.monospacedDigit())
 
+                if state.timingAlignmentSource == .midi {
+                    savedDrumAlignments
+                }
+
                 if let message = state.audioEngineRecoveryMessage {
                     Label(message, systemImage: "arrow.clockwise.circle")
                         .font(.caption)
@@ -84,11 +82,18 @@ struct CalibrationView: View {
                 }
 
                 switch state.timingAlignmentPhase {
+                case .starting, .countIn, .collecting:
+                    timingAlignmentBeatIndicator
+                case .idle, .review, .saved, .error:
+                    EmptyView()
+                }
+
+                switch state.timingAlignmentPhase {
                 case .idle:
                     if let profile = state.activeTimingAlignmentProfile {
                         timingProfileSummary(profile)
                         HStack {
-                            Button("Re-align") { state.startTimingAlignment() }
+                            Button("Re-align") { state.retryTimingAlignment() }
                             Button("Delete Saved Alignment", role: .destructive) {
                                 state.deleteActiveTimingAlignment()
                             }
@@ -96,7 +101,9 @@ struct CalibrationView: View {
                     } else {
                         instruction(
                             "Ready for 12 clicks at 60 BPM",
-                            detail: "After an eight-beat, two-bar count-in, play the selected drum exactly once on every click. Use the headphones and posture you normally practice with.",
+                            detail: state.timingAlignmentSource == .midi
+                                ? "After the two-bar count-in, use one comfortable e-kit pad—snare is recommended—and play it exactly once on every click. This one result applies to every MIDI drum."
+                                : "After the two-bar count-in, play the kick exactly once on every click. Use the headphones and posture you normally practice with.",
                             icon: "metronome"
                         )
                         Button("Start Timing Alignment") { state.startTimingAlignment() }
@@ -136,7 +143,7 @@ struct CalibrationView: View {
                 case let .collecting(referenceCount, target, detectedHits):
                     instruction(
                         "Play once on every click",
-                        detail: "Click \(referenceCount) of \(target) · detected \(detectedHits) matching \(state.timingAlignmentSource == .midi ? state.timingAlignmentVoice.displayName : "kick") hits.",
+                        detail: "Click \(referenceCount) of \(target) · detected \(detectedHits) matching \(state.timingAlignmentSource == .midi ? "e-kit MIDI" : "kick microphone") hits.",
                         icon: "waveform.and.mic"
                     )
                     ProgressView(value: Double(referenceCount), total: Double(target))
@@ -151,13 +158,13 @@ struct CalibrationView: View {
 
                 case let .review(profile):
                     timingProfileSummary(profile)
-                    Text("Positive compensation means the raw input arrived after the audible click; scoring will move that input earlier by the shown amount. Raw recorded timestamps are never changed.")
+                    Text("Positive compensation means the raw input arrived after the audible click; scoring will move that input earlier by the shown amount. Raw recorded timestamps are never changed, and MIDI coordination is always measured from the original relative MIDI timing.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     HStack {
                         Button("Save & Apply") { state.saveTimingAlignment() }
                             .keyboardShortcut(.return, modifiers: [])
-                        Button("Retry") { state.startTimingAlignment() }
+                        Button("Retry") { state.retryTimingAlignment() }
                         Button("Cancel") { state.cancelTimingAlignment() }
                     }
 
@@ -171,7 +178,7 @@ struct CalibrationView: View {
                     Label(message, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                     HStack {
-                        Button("Retry") { state.startTimingAlignment() }
+                        Button("Retry") { state.retryTimingAlignment() }
                         Button("Refresh Audio & Retry") { state.refreshAudioEngineAndRetryTimingAlignment() }
                             .disabled(state.isRefreshingAudioEngine)
                         Button("Dismiss") { state.dismissTimingAlignmentStatus() }
@@ -179,6 +186,39 @@ struct CalibrationView: View {
                 }
             }
             .padding(.vertical, 6)
+        }
+    }
+
+    private var timingAlignmentBeatIndicator: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 3) {
+                ForEach(1...4, id: \.self) { beat in
+                    let isActive = state.timingAlignmentVisibleBeat == beat
+                    Text("\(beat)")
+                        .font(.system(size: 42, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(isActive ? Color.white : Color.primary.opacity(0.72))
+                        .frame(maxWidth: .infinity, minHeight: 74)
+                        .background(
+                            isActive
+                                ? (beat == 1 ? Color.orange : Color.accentColor)
+                                : Color.primary.opacity(0.07)
+                        )
+                        .scaleEffect(isActive ? 1 : 0.96)
+                        .animation(.easeOut(duration: 0.08), value: isActive)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.primary.opacity(0.12))
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(state.timingAlignmentVisibleBeat.map { "Metronome beat \($0)" } ?? "Metronome between beats")
+
+            Text("The light follows the audible click. Use the sound—not the screen—as the timing reference.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -201,13 +241,58 @@ struct CalibrationView: View {
                 metric("Usable samples", "\(profile.sampleCount)")
                 Spacer()
             }
-            Text("\(profile.inputName) → \(profile.outputName) · \(profile.voice.displayName) · saved \(profile.createdAt.formatted(date: .abbreviated, time: .shortened))")
+            Text("\(profile.inputName) → \(profile.outputName) · \(profile.scopeDisplayName) · saved \(profile.createdAt.formatted(date: .abbreviated, time: .shortened))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if profile.medianAbsoluteDeviationMilliseconds > 30 {
                 Text("Hit variability is high. Retry at a comfortable posture and concentrate on landing naturally with the click.")
                     .font(.callout)
                     .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var savedDrumAlignments: some View {
+        let profiles = state.timingAlignmentProfilesForCurrentSetup
+        VStack(alignment: .leading, spacing: 7) {
+            Text(state.timingAlignmentSource == .midi
+                ? "Saved shared MIDI alignment for this setup"
+                : "Saved microphone alignment for this setup")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+            if profiles.isEmpty {
+                Text("None yet")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(profiles) { profile in
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.circle.fill")
+                                Text(profile.scopeDisplayName)
+                                Text(profile.compensationMilliseconds.formatted(
+                                    .number.precision(.fractionLength(1))
+                                ) + " ms")
+                                    .monospacedDigit()
+                            }
+                            .font(.callout)
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(.quaternary.opacity(0.35), in: Capsule())
+                        }
+                    }
+                }
+            }
+            if state.hasIgnoredLegacyMIDITimingProfilesForCurrentSetup {
+                Label(
+                    "Older per-drum alignments are retained for history but are no longer applied.",
+                    systemImage: "info.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
     }

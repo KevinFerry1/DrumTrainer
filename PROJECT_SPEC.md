@@ -95,7 +95,7 @@ These unknowns must be configurable or documented; they should not block Milesto
 - **Deterministic core.** Input normalization, event matching, and scoring should be testable without attached hardware.
 - **Graceful degradation.** Device loss or denial of microphone permission must produce clear UI, not a crash.
 - **No premature Songsterr dependency.** Imported standard/local files are the supported path.
-- **Privacy by default.** Process microphone buffers locally and do not retain raw audio unless the user explicitly enables a diagnostic recording.
+- **Privacy by default.** Process microphone buffers locally and do not retain audio unless the user explicitly enables local practice recording.
 
 ## 6. V1 hardware and signal flow
 
@@ -221,12 +221,13 @@ Known V1 limitations:
 - Allow output device selection and a volume control.
 - Offer distinct click timbres and enough digital gain range to remain audible during acoustic practice.
 - Meter post-effect app output in peak/RMS dBFS and provide an enabled-by-default configurable dynamics ceiling. Clearly distinguish this from calibrated headphone dB SPL and system-wide audio monitoring.
+- Optionally reinforce accepted MIDI or microphone kick events through the selected headphone output without adding generated audio to the event stream or scoring evidence.
 - Continue stable scheduling when the UI is busy.
 - Report an underrun or timing health warning if scheduling fails.
 
 The training grid is conceptually separate from audible click events: not every expected 16th note must produce a click.
 
-Current refinement: the app provides five synthesized click voices, −36 to +12 dB click gain, a persistent −12 to −0.5 dBFS dynamics ceiling, post-effect peak/RMS and gain-reduction metering, and the same controls in Live Monitor and Practice. The meter covers DrumTrainer-generated audio only. Practice notation uses exact event timestamps, alternating beat lanes, a moving playhead, and a live measure/beat/next-note cue. USB microphone capture explicitly requests the selected device's native format and retries the input-scope format for Core Audio format error -10868.
+Current refinement: the app provides five synthesized click voices, −36 to +12 dB click gain, four synthesized kick-reinforcement voices with independent level, MIDI/microphone source selection, velocity response, retrigger protection, and six-voice polyphony, a persistent −12 to −0.5 dBFS dynamics ceiling, post-effect peak/RMS and gain-reduction metering, and the same controls in Live Monitor and Practice. Kick reinforcement is driven only by accepted canonical kick events, is suppressed during calibration/alignment, and never enters scoring evidence. The meter covers DrumTrainer-generated audio only. Practice notation uses exact event timestamps, alternating beat lanes, a moving playhead, and a live measure/beat/next-note cue. USB microphone capture explicitly requests the selected device's native format and retries the input-scope format for Core Audio format error -10868.
 
 ## 10. Architecture
 
@@ -446,6 +447,8 @@ recall = correct expected notes / total expected notes
 precision = correct expected notes / total played/scored notes
 ```
 
+Current refinement: Practice provides a persistent **Grade kicks** switch. When disabled, kick expectations remain visible in notation for manual playing, but both expected and detected `.kick` events are filtered before matching. Recall, precision, hit classifications, timing aggregates, per-voice metrics, simultaneous-limb spread, clean-run progression, and Find My Ceiling therefore use only the remaining e-kit voices. Raw detected kicks remain in saved evidence, and each session persists the scoring configuration so historical rescoring is reproducible.
+
 The UI may call recall “note accuracy” if clearly defined. A combined overall score may be added later but must show its formula and must not replace raw metrics.
 
 Suggested timing bands, configurable by exercise:
@@ -584,6 +587,7 @@ Example:
 - Sessions by date, exercise, tempo, and duration.
 - Trend charts for timing error, consistency, note accuracy, limb spread, and maximum clean tempo.
 - Drill-down into an individual session.
+- Optional, explicitly enabled compressed audio recording for each completed session, with a recording input independent of the kick-detection microphone plus playback, scrubbing, file size, and deletion controls.
 
 ## 16. Phased milestones
 
@@ -644,8 +648,9 @@ Milestone 1 is complete only when all acceptance criteria in Section 17 pass.
 - [x] Dedicated ceiling-finding mode for built-in and custom exercises.
 - [x] Trend charts and personal bests.
 - [x] Validated, schema-versioned JSON export/import of user data.
+- [x] Opt-in local AAC practice recordings linked to History sessions, including playback and automatic cleanup when sessions are deleted.
 
-The schema-v4 implementation retains expected and performed events, raw event metadata, match results, scoring metrics, selected-device context, the exact microphone calibration profile used by each new session, and persistent imported-song libraries. History supports event-level drill-down, editable notes/tags, rescoring, individual/all deletion, and backward migration of schema-v1/v2/v3 data. Find My Ceiling runs repeat the selected exercise, advance after each clean round, stop on the first failed round, and persist the highest verified clean tempo. Legacy summaries remain usable for trends but cannot be made rescorable retroactively because their events were never stored.
+The schema-v8 implementation retains expected and performed events, raw event metadata, match results, scoring metrics, authored custom-note accents and their velocity targets, per-session kick-grading configuration, selected-device context, the exact microphone calibration profile used by each new session, and persistent imported-song libraries. History supports event-level drill-down, editable notes/tags, rescoring, individual/all deletion, and backward migration of schema-v1/v2/v3/v4/v5/v6/v7 data. Find My Ceiling runs repeat the selected exercise, advance after each clean round, stop on the first failed round, and persist the highest verified clean tempo. Accent results remain separate from note/timing matching. New custom accents use the median of up to four nearby correctly played non-accented events of the same voice as their baseline, require the configured MIDI-velocity-point contrast or 20% of that baseline (whichever is greater), and can additionally require an optional absolute velocity floor. Older schema-v6 accent evidence retains its original floor-only behavior during rescoring. At least 90% of authored accents must pass for a clean run. Legacy summaries remain usable for trends but cannot be made rescorable retroactively because their events were never stored.
 
 ### Milestone 5 — Song and tab import
 
@@ -654,7 +659,9 @@ The schema-v4 implementation retains expected and performed events, raw event me
 - Add local MusicXML support where drum/percussion semantics are recoverable.
 - Add Guitar Pro support through a lawful, maintainable parser/library or an explicit conversion workflow.
 - [x] Map imported notes to canonical drum voices with editable per-song mapping and explicit Ignore states.
-- [x] Persist, rename, select, and delete imported songs through schema-v4 data storage and JSON transfer.
+- [x] Persist, rename, select, and delete imported songs through schema-v8 data storage and JSON transfer.
+- [x] Author and persist ghost notes in custom measures, render parenthesized noteheads, grade relative softness against normal notes of the same voice with an optional maximum velocity, and save results for history, clean runs, and rescoring.
+- [x] Author and persist `>` accents in custom measures; grade their local same-voice velocity contrast with an optional absolute floor; annotate baseline, target, and result; and include accent accuracy in clean-run decisions.
 - [x] Section selection, looping, count-in, tempo-map scaling, notation preview, scoring, history, automatic progression, and Find My Ceiling.
 - [x] Schedule the audible click from the imported, scaled tempo map with per-measure accents and output-presentation-latency compensation.
 - Optional backing-audio alignment with an explicit calibration/sync workflow.
@@ -703,7 +710,11 @@ Two sensors should emit one logical hit, not two. A classifier combines near-sim
 
 ## 19. Songsterr and imported tab strategy
 
+Custom practice now also supports named arrangements of saved 4/4 measures, with step order, independent repeats, whole-sequence repeats, preserved dynamics, mixed subdivision grids, continuous scoring, and per-measure review. Schema v9 stores sequence snapshots and score labels/grids while migrating older archives. Limits are 32 steps, 16 repeats, 128 total measures, and 10,000 expected notes. Each run uses one count-in for the entire arrangement.
+
 Songsterr is a possible source and practice companion, not an architectural dependency.
+
+An experimental audio-start companion mode is available for imported MIDI sections: select a browser, arm while paused, wait for quiet then audio onset, and grade one pass against a manually offset MIDI timeline without the app's count-in/click. It does not read Songsterr's playback position or follow pauses, seeks, loops, speed changes, or drift. Unverified prototype scores are review-only and excluded from persisted progress; physical browser/headphone alignment remains to be validated. See README for setup and limitations.
 
 - Do not scrape the Songsterr player or depend on undocumented private APIs.
 - Prefer user-imported Standard MIDI, Guitar Pro, or MusicXML files obtained lawfully.
@@ -723,7 +734,7 @@ The first song importer should be Standard MIDI because its timed events and tem
 - Version the persistence schema and scoring algorithm.
 - Provide deletion and export controls before treating history as production-ready.
 - Do not record or retain live microphone audio by default.
-- Any diagnostic audio recording must be explicit, visibly active, and easy to delete.
+- Any practice or diagnostic audio recording must be explicit, visibly active, local-only by default, and easy to delete. Practice audio remains outside the JSON archive so large media never enters preferences-backed persistence.
 
 ## 21. Quality requirements
 

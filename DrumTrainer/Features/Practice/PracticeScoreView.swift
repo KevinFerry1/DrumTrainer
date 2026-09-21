@@ -6,6 +6,8 @@ struct PracticeScoreView: View {
     var sessionStartTime: Int64?
     var sessionEndTime: Int64?
     var classifications: [UUID: MatchClassification] = [:]
+    var accentClassifications: [UUID: AccentResultClassification] = [:]
+    var ghostClassifications: [UUID: GhostResultClassification] = [:]
     var previewOnly = false
     var fixedMeasureWidth: Double?
 
@@ -63,11 +65,12 @@ struct PracticeScoreView: View {
         let staffTop = 52.0
         let staffSpacing = 10.0
         let staffBottom = staffTop + staffSpacing * 4
-        let slotsPerBeat = pattern.subdivision.notesPerBeat
         let visibleMinX = viewportOffset - measureWidth
         let visibleMaxX = viewportOffset + size.width + measureWidth
 
         for measureIndex in 0..<measureCount {
+            let subdivision = pattern.subdivision(forMeasure: measureIndex + 1)
+            let slotsPerBeat = subdivision.notesPerBeat
             let signature = pattern.signature(forMeasure: measureIndex + 1)
             let beatsInMeasure = signature.numerator
             let slotsPerMeasure = slotsPerBeat * beatsInMeasure
@@ -102,7 +105,7 @@ struct PracticeScoreView: View {
             )
 
             drawLabel(
-                "Measure \(measureIndex + 1)",
+                "\(measureIndex + 1)" + (pattern.label(forMeasure: measureIndex + 1).map { " · " + String($0.prefix(26)) } ?? " · Measure"),
                 at: CGPoint(x: measureLeft + 8 - viewportOffset, y: 25),
                 font: .caption,
                 color: .secondary,
@@ -166,7 +169,7 @@ struct PracticeScoreView: View {
                     }
 
                     drawLabel(
-                        countLabel(beat: beat, subdivision: slotInBeat),
+                        countLabel(beat: beat, subdivision: slotInBeat, grid: subdivision),
                         at: CGPoint(x: x, y: 121),
                         font: .caption2.monospaced(),
                         color: slotInBeat == 0 ? .primary.opacity(0.8) : .secondary.opacity(0.75),
@@ -197,6 +200,10 @@ struct PracticeScoreView: View {
                         ) - viewportOffset,
                         voice: event.voice,
                         color: noteColor(for: event),
+                        isAccent: event.isAccent,
+                        accentColor: accentColor(for: event),
+                        isGhost: event.isGhost,
+                        ghostColor: ghostColor(for: event),
                         staffTop: staffTop,
                         staffSpacing: staffSpacing,
                         context: &context
@@ -205,11 +212,11 @@ struct PracticeScoreView: View {
 
                 drawBeams(
                     notePoints: notePoints,
-                    beamCount: pattern.subdivision == .sixteenths ? 2 : 1,
+                    beamCount: subdivision == .sixteenths ? 2 : 1,
                     context: &context
                 )
 
-                if pattern.subdivision == .triplets, notePoints.count > 1,
+                if subdivision == .triplets, notePoints.count > 1,
                    let first = notePoints.first, let last = notePoints.last {
                     let centerX = (first.x + last.x) / 2
                     drawLabel("3", at: CGPoint(x: centerX, y: 38), font: .caption2.bold(), color: .secondary, anchor: .center, context: &context)
@@ -251,11 +258,21 @@ struct PracticeScoreView: View {
         atX x: Double,
         voice: DrumVoice,
         color: Color,
+        isAccent: Bool,
+        accentColor: Color,
+        isGhost: Bool,
+        ghostColor: Color,
         staffTop: Double,
         staffSpacing: Double,
         context: inout GraphicsContext
     ) {
         let y = noteY(for: voice, staffTop: staffTop, staffSpacing: staffSpacing)
+        if isGhost {
+            drawLabel("(", at: CGPoint(x: x - 11, y: y), font: .callout,
+                      color: ghostColor, anchor: .center, context: &context)
+            drawLabel(")", at: CGPoint(x: x + 11, y: y), font: .callout,
+                      color: ghostColor, anchor: .center, context: &context)
+        }
         if isCymbal(voice) {
             strokeLine(
                 from: CGPoint(x: x - 6, y: y - 5),
@@ -282,6 +299,16 @@ struct PracticeScoreView: View {
             width: 1.6,
             context: &context
         )
+        if isAccent {
+            drawLabel(
+                ">",
+                at: CGPoint(x: x, y: y - 12),
+                font: .caption2.bold(),
+                color: accentColor,
+                anchor: .center,
+                context: &context
+            )
+        }
     }
 
     private func noteY(for voice: DrumVoice, staffTop: Double, staffSpacing: Double) -> Double {
@@ -411,7 +438,7 @@ struct PracticeScoreView: View {
                 ? Double(elapsed - measureStart) / Double(measureEnd - measureStart)
                 : 0
             let signature = pattern.signature(forMeasure: measure + 1)
-            let slots = pattern.subdivision.notesPerBeat * signature.numerator
+            let slots = pattern.subdivision(forMeasure: measure + 1).notesPerBeat * signature.numerator
             return PracticeScoreTimeline.notePosition(
                 measure: measure,
                 slot: min(max(progress, 0), 1) * Double(slots),
@@ -469,7 +496,7 @@ struct PracticeScoreView: View {
                 )
             }
         }
-        let slot = (event.beat - 1) * pattern.subdivision.notesPerBeat + event.subdivision
+        let slot = (event.beat - 1) * pattern.subdivision(forMeasure: event.measure).notesPerBeat + event.subdivision
         return xPosition(
             measure: measureIndex,
             slot: slot,
@@ -497,8 +524,28 @@ struct PracticeScoreView: View {
         }
     }
 
-    private func countLabel(beat: Int, subdivision: Int) -> String {
-        switch pattern.subdivision {
+    private func accentColor(for event: ExpectedEvent) -> Color {
+        switch accentClassifications[event.id] {
+        case .achieved: .green
+        case .belowThreshold, .insufficientContrast: .orange
+        case .missed: .red
+        case .velocityUnavailable, .baselineUnavailable: .secondary
+        case nil: .primary
+        }
+    }
+
+    private func ghostColor(for event: ExpectedEvent) -> Color {
+        switch ghostClassifications[event.id] {
+        case .achieved: .green
+        case .aboveThreshold, .insufficientContrast: .orange
+        case .missed: .red
+        case .velocityUnavailable, .baselineUnavailable: .secondary
+        case nil: .primary
+        }
+    }
+
+    private func countLabel(beat: Int, subdivision: Int, grid: KickSubdivision) -> String {
+        switch grid {
         case .eighths:
             subdivision == 0 ? "\(beat + 1)" : "&"
         case .sixteenths:

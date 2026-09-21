@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import DrumTrainer
 
@@ -155,6 +156,27 @@ final class MicrophoneCalibrationTests: XCTestCase {
         XCTAssertEqual(measurement.sampleCount, 8)
     }
 
+    func testSharedMIDITimingCollectorAcceptsDifferentDrumVoices() throws {
+        var collector = TimingAlignmentCollector(source: .midi, voice: nil)
+        let voices: [DrumVoice] = [.snare, .openHiHat, .kick, .ride, .snare, .openHiHat]
+        let offsets: [Int64] = [31, 29, 30, 32, 28, 30]
+        for (index, pair) in zip(voices, offsets).enumerated() {
+            let reference = Int64(index + 1) * 1_000_000_000
+            collector.recordReference(reference)
+            collector.record(PerformanceEvent(
+                source: .midi,
+                voice: pair.0,
+                hostTime: 0,
+                sessionTimeNanoseconds: reference + pair.1 * 1_000_000,
+                rawMetadata: .simulated(label: "shared MIDI timing alignment")
+            ))
+        }
+
+        let measurement = try XCTUnwrap(collector.measurement())
+        XCTAssertEqual(measurement.compensationMilliseconds, 30, accuracy: 0.001)
+        XCTAssertEqual(measurement.sampleCount, voices.count)
+    }
+
     func testTimingAlignmentCollectorIgnoresWrongSourceAndVoice() {
         var collector = TimingAlignmentCollector(source: .microphone, voice: .kick)
         collector.recordReference(1_000_000_000)
@@ -176,7 +198,7 @@ final class MicrophoneCalibrationTests: XCTestCase {
         XCTAssertNil(collector.measurement())
     }
 
-    func testTimingAlignmentProfilesPersistPerInputOutputPairing() throws {
+    func testTimingAlignmentProfilesPersistPerInputOutputAndVoice() throws {
         let suiteName = "TimingAlignmentTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -207,13 +229,183 @@ final class MicrophoneCalibrationTests: XCTestCase {
             sampleCount: 12,
             createdAt: Date(timeIntervalSince1970: 200)
         )
+        let snare = TimingAlignmentProfile(
+            id: UUID(),
+            source: .midi,
+            inputID: "alesis",
+            inputName: "Alesis Module",
+            outputUID: "focusrite",
+            outputName: "Focusrite Solo",
+            voice: .snare,
+            compensationMilliseconds: 42,
+            medianAbsoluteDeviationMilliseconds: 3,
+            sampleCount: 12,
+            createdAt: Date(timeIntervalSince1970: 300)
+        )
 
         store.saveProfile(focusrite)
         store.saveProfile(speakers)
-        XCTAssertEqual(Set(store.loadProfiles().map(\.key)), [focusrite.key, speakers.key])
+        store.saveProfile(snare)
+        XCTAssertEqual(Set(store.loadProfiles().map(\.key)), [focusrite.key, speakers.key, snare.key])
 
         store.deleteProfile(key: focusrite.key)
-        XCTAssertEqual(store.loadProfiles(), [speakers])
+        XCTAssertEqual(Set(store.loadProfiles().map(\.key)), [speakers.key, snare.key])
+    }
+
+    @MainActor
+    func testAppStateUsesSharedMIDIProfileAndIgnoresLegacyPerDrumProfiles() {
+        let state = AppState(
+            clock: FixedHostClock(hostTime: 100),
+            converter: LinearHostTimeConverter(nanosecondsPerTick: 1)
+        )
+        state.midiDevices = [MIDIInputDevice(id: 42, endpoint: 0, name: "Test e-kit")]
+        state.selectedMIDIInputID = 42
+        let legacy = TimingAlignmentProfile(
+            id: UUID(), source: .midi,
+            inputID: "42", inputName: "Test e-kit",
+            outputUID: "system-default", outputName: "System Default",
+            voice: .snare,
+            compensationMilliseconds: 48,
+            medianAbsoluteDeviationMilliseconds: 3,
+            sampleCount: 12,
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        let shared = TimingAlignmentProfile(
+            id: UUID(), source: .midi,
+            inputID: "42", inputName: "Test e-kit",
+            outputUID: "system-default", outputName: "System Default",
+            voice: .unknown,
+            compensationMilliseconds: 30,
+            medianAbsoluteDeviationMilliseconds: 2,
+            sampleCount: 12,
+            createdAt: Date(timeIntervalSince1970: 200)
+        )
+
+        state.timingAlignmentProfiles = [legacy]
+        XCTAssertNil(state.activeTimingAlignmentProfile)
+        XCTAssertTrue(state.hasIgnoredLegacyMIDITimingProfilesForCurrentSetup)
+
+        state.timingAlignmentProfiles.append(shared)
+        XCTAssertEqual(state.activeTimingAlignmentProfile, shared)
+        XCTAssertEqual(state.timingAlignmentProfilesForCurrentSetup, [shared])
+    }
+
+    func testPracticeAudioRecorderWritesOnlyScheduledWindowAsCompressedAAC() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PracticeAudioTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PracticeAudioFileStore(directoryURL: directory)
+        let recorder = PracticeAudioRecorder(store: store)
+        let sessionID = UUID()
+        let sampleRate = 48_000.0
+        let format = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: 1,
+            interleaved: false
+        ))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: AVAudioFrameCount(sampleRate)
+        ))
+        buffer.frameLength = buffer.frameCapacity
+        let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+        for frame in 0..<Int(buffer.frameLength) {
+            channel[frame] = Float(sin(Double(frame) * 2 * .pi * 220 / sampleRate) * 0.2)
+        }
+
+        let bufferStart = AVAudioTime.hostTime(forSeconds: 10)
+        let recordingStart = bufferStart + AVAudioTime.hostTime(forSeconds: 0.25)
+        let recordingEnd = bufferStart + AVAudioTime.hostTime(forSeconds: 0.75)
+        try recorder.start(
+            sessionID: sessionID,
+            sourceDeviceID: 91,
+            startHostTime: recordingStart,
+            endHostTime: recordingEnd
+        )
+        recorder.append(
+            buffer,
+            time: AVAudioTime(hostTime: bufferStart),
+            sourceDeviceID: 90
+        )
+        recorder.append(
+            buffer,
+            time: AVAudioTime(hostTime: bufferStart),
+            sourceDeviceID: 91
+        )
+        let result = await withCheckedContinuation { continuation in
+            recorder.finish { asset, error in
+                continuation.resume(returning: (asset, error))
+            }
+        }
+
+        XCTAssertNil(result.1)
+        let asset = try XCTUnwrap(result.0)
+        XCTAssertGreaterThan(asset.fileSizeBytes, 1_000)
+        XCTAssertLessThan(asset.fileSizeBytes, 100_000)
+        XCTAssertEqual(store.totalSizeBytes(), asset.fileSizeBytes)
+        let player = try AVAudioPlayer(contentsOf: asset.url)
+        XCTAssertEqual(player.duration, 0.5, accuracy: 0.06)
+
+        try store.deleteRecording(for: sessionID)
+        XCTAssertNil(store.asset(for: sessionID))
+        XCTAssertEqual(store.totalSizeBytes(), 0)
+    }
+
+    func testPracticeAudioRecorderExtractsScarlettLoopbackPair() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PracticeLoopbackTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PracticeAudioFileStore(directoryURL: directory)
+        let recorder = PracticeAudioRecorder(store: store)
+        let sessionID = UUID()
+        let sampleRate = 48_000.0
+        let layout = try XCTUnwrap(AVAudioChannelLayout(
+            layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 4
+        ))
+        let format = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            interleaved: false,
+            channelLayout: layout
+        ))
+        let frameCount = AVAudioFrameCount(4_800)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: frameCount
+        ))
+        buffer.frameLength = frameCount
+        let channels = try XCTUnwrap(buffer.floatChannelData)
+        for channel in 0..<4 {
+            for frame in 0..<Int(frameCount) {
+                channels[channel][frame] = channel >= 2 ? 0.2 : 0
+            }
+        }
+
+        let start = AVAudioTime.hostTime(forSeconds: 20)
+        try recorder.start(
+            sessionID: sessionID,
+            sourceDeviceID: 101,
+            channelIndices: PracticeAudioChannelSelection.loopback34.channelIndices,
+            startHostTime: start,
+            endHostTime: start + AVAudioTime.hostTime(forSeconds: 0.1)
+        )
+        recorder.append(
+            buffer,
+            time: AVAudioTime(hostTime: start),
+            sourceDeviceID: 101
+        )
+        let result = await withCheckedContinuation { continuation in
+            recorder.finish { asset, error in
+                continuation.resume(returning: (asset, error))
+            }
+        }
+
+        XCTAssertNil(result.1)
+        let asset = try XCTUnwrap(result.0)
+        let player = try AVAudioPlayer(contentsOf: asset.url)
+        XCTAssertEqual(player.numberOfChannels, 2)
+        XCTAssertEqual(player.duration, 0.1, accuracy: 0.03)
     }
 
     private func makeProfile(uid: String, threshold: Double) -> MicrophoneCalibrationProfile {

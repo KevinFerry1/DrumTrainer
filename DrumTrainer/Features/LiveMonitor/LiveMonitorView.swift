@@ -34,6 +34,12 @@ struct LiveMonitorView: View {
                     }
                     .labelsHidden()
                     .frame(maxWidth: 300)
+                    Button {
+                        state.refreshMIDIInputs()
+                    } label: {
+                        Label("Rescan", systemImage: "arrow.clockwise")
+                    }
+                    .help("Ask macOS to scan connected MIDI inputs again")
                     Text(state.midiStatus.message)
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -156,8 +162,16 @@ struct LiveMonitorView: View {
                     Text(state.metronomeGainDecibels.formatted(.number.sign(strategy: .always()).precision(.fractionLength(0))) + " dB")
                         .frame(width: 58, alignment: .trailing)
                         .monospacedDigit()
-                    Slider(value: $state.metronomeGainDecibels, in: -36...12, step: 1)
+                    Slider(
+                        value: $state.metronomeGainDecibels,
+                        in: MetronomeGain.minimumDecibels...MetronomeGain.maximumDecibels,
+                        step: 1
+                    )
                         .frame(maxWidth: 220)
+                    Button("Max boost") {
+                        state.metronomeGainDecibels = MetronomeGain.maximumDecibels
+                    }
+                    .controlSize(.small)
                     Toggle("Limiter", isOn: $state.metronomeLimiterEnabled)
                         .toggleStyle(.switch)
                     Text("Ceiling")
@@ -170,7 +184,18 @@ struct LiveMonitorView: View {
                 }
                 .font(.callout)
 
+                if MetronomeGain.isExtremeBoost(state.metronomeGainDecibels) {
+                    Label(
+                        "High click boost is active. Keep the limiter on and raise the level gradually.",
+                        systemImage: "speaker.wave.3.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
+
                 AppOutputMeterView(level: state.appOutputLevel)
+                Divider()
+                KickMonitorControls(state: state, labelWidth: 78)
             }
         }
     }
@@ -337,6 +362,85 @@ struct LiveMonitorView: View {
         )
         .foregroundStyle(health.hasWarning ? Color.orange : Color.secondary)
         .help("A tick is at risk when it reaches the audio scheduler with less than 20 ms of lead time.")
+    }
+}
+
+struct KickMonitorControls: View {
+    @ObservedObject var state: AppState
+    let labelWidth: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 12) {
+                Text("Kick monitor")
+                    .frame(width: labelWidth, alignment: .leading)
+                Toggle("Reinforce registered kicks", isOn: $state.kickMonitorEnabled)
+                    .toggleStyle(.switch)
+                Picker("Kick monitor source", selection: $state.kickMonitorSource) {
+                    ForEach(KickMonitorSource.allCases) { source in
+                        Text(source.displayName).tag(source)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 180)
+                Button("Test Kick") { state.testKickMonitor() }
+                    .disabled(!state.kickMonitorEnabled)
+                Spacer()
+            }
+
+            HStack(spacing: 12) {
+                Text("Kick sound")
+                    .frame(width: labelWidth, alignment: .leading)
+                Picker("Kick sound", selection: $state.kickMonitorSound) {
+                    ForEach(KickMonitorSound.allCases) { sound in
+                        Text(sound.displayName).tag(sound)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 180)
+                Text(state.kickMonitorSound.guidance)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .disabled(!state.kickMonitorEnabled)
+
+            HStack(spacing: 12) {
+                Text("Kick level")
+                    .frame(width: labelWidth, alignment: .leading)
+                Text(
+                    state.kickMonitorGainDecibels.formatted(
+                        .number.sign(strategy: .always()).precision(.fractionLength(0))
+                    ) + " dB"
+                )
+                .frame(width: 58, alignment: .trailing)
+                .monospacedDigit()
+                Slider(value: $state.kickMonitorGainDecibels, in: -36...6, step: 1)
+                    .frame(maxWidth: 210)
+                Toggle("Follow hit velocity", isOn: $state.kickMonitorVelocitySensitive)
+                    .toggleStyle(.switch)
+                Text("Lockout \(Int(state.kickMonitorRetriggerMilliseconds)) ms")
+                    .monospacedDigit()
+                Slider(value: $state.kickMonitorRetriggerMilliseconds, in: 10...150, step: 1)
+                    .frame(width: 130)
+                Spacer()
+            }
+            .font(.callout)
+            .disabled(!state.kickMonitorEnabled)
+
+            HStack(spacing: 12) {
+                Color.clear.frame(width: labelWidth, height: 1)
+                Label(
+                    state.kickMonitorSource == .microphone
+                        ? "Microphone reinforcement plays only after a hit is detected, so it has more latency than MIDI."
+                        : "E-kit MIDI gives the lowest monitoring latency. Both sources share the selected output limiter and meter.",
+                    systemImage: "headphones"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
     }
 }
 

@@ -17,6 +17,7 @@ struct MIDINoteOn: Equatable, Sendable {
 enum MIDIInputStatus: Equatable, Sendable {
     case stopped
     case ready
+    case noDevices
     case connected(String)
     case disconnected(String)
     case error(String)
@@ -25,6 +26,7 @@ enum MIDIInputStatus: Equatable, Sendable {
         switch self {
         case .stopped: "MIDI monitoring is stopped"
         case .ready: "Choose a MIDI input"
+        case .noDevices: "No MIDI inputs found. Reconnect the module, then rescan."
         case let .connected(name): "Connected to \(name)"
         case let .disconnected(name): "\(name) disconnected; reconnect it or choose another input"
         case let .error(message): message
@@ -186,7 +188,10 @@ final class MIDIInputService: @unchecked Sendable {
         let oldEndpoint = selectedEndpoint
         stateLock.unlock()
 
-        guard let activeID else { return }
+        guard let activeID else {
+            onStatusChanged(devices.isEmpty ? .noDevices : .ready)
+            return
+        }
         guard let replacement = devices.first(where: { $0.id == activeID }) else {
             if oldEndpoint != 0, port != 0 { MIDIPortDisconnectSource(port, oldEndpoint) }
             stateLock.lock()
@@ -239,8 +244,10 @@ final class MIDIInputService: @unchecked Sendable {
             guard endpoint != 0 else { return nil }
 
             var uniqueID = MIDIUniqueID()
-            guard MIDIObjectGetIntegerProperty(endpoint, kMIDIPropertyUniqueID, &uniqueID) == noErr else {
-                return nil
+            if MIDIObjectGetIntegerProperty(endpoint, kMIDIPropertyUniqueID, &uniqueID) != noErr {
+                // Some class-compliant and virtual endpoints omit a unique-ID property.
+                // Keep them selectable for this CoreMIDI session using the endpoint ref.
+                uniqueID = MIDIUniqueID(bitPattern: endpoint)
             }
 
             var displayName: Unmanaged<CFString>?

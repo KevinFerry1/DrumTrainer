@@ -119,6 +119,36 @@ struct ImportedSong: Identifiable, Codable, Equatable, Sendable {
     static func isScorable(_ voice: DrumVoice) -> Bool {
         voice != .unknown && voice != .metronome
     }
+
+    func scorableNoteCount(
+        fromMeasure startMeasure: Int,
+        throughMeasure endMeasure: Int,
+        includeKicks: Bool = true
+    ) -> Int {
+        guard let selectedTrack else { return 0 }
+        let measures = ImportedSongTimeline.measures(for: self)
+        guard startMeasure >= 1, endMeasure >= startMeasure, endMeasure <= measures.count else { return 0 }
+        let startTick = measures[startMeasure - 1].startTick
+        let endTick = measures[endMeasure - 1].endTick
+        let mapping = Dictionary(uniqueKeysWithValues: noteMappings.map { ($0.noteNumber, $0.voice) })
+        return selectedTrack.notes.count { note in
+            guard note.tick >= startTick, note.tick < endTick,
+                  let voice = mapping[note.noteNumber], Self.isScorable(voice) else { return false }
+            return includeKicks || voice != .kick
+        }
+    }
+
+    func firstMeasureWithScorableNote(includeKicks: Bool = true) -> Int? {
+        guard let selectedTrack else { return nil }
+        let mapping = Dictionary(uniqueKeysWithValues: noteMappings.map { ($0.noteNumber, $0.voice) })
+        guard let firstTick = selectedTrack.notes.lazy.compactMap({ note -> Int64? in
+            guard let voice = mapping[note.noteNumber], Self.isScorable(voice),
+                  includeKicks || voice != .kick else { return nil }
+            return note.tick
+        }).min() else { return nil }
+        return ImportedSongTimeline.measures(for: self)
+            .first(where: { firstTick >= $0.startTick && firstTick < $0.endTick })?.number
+    }
 }
 
 struct ImportedMIDINoteSummary: Identifiable, Equatable, Sendable {
