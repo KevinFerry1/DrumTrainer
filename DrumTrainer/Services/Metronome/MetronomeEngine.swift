@@ -265,6 +265,7 @@ extension MetronomeControlling {
 final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
     private static let kickPolyphony = 6
     private static let kickVelocitySteps = 16
+    private static let retirementQueue = DispatchQueue(label: "DrumTrainer.RetiredMetronomeEngine", qos: .utility)
 
     typealias DevicesHandler = @Sendable ([AudioOutputDevice]) -> Void
     typealias StatusHandler = @Sendable (MetronomeStatus) -> Void
@@ -302,6 +303,7 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
     private var limiterEnabled = true
     private var limiterCeilingDBFS = -1.0
     private var clickFormat: AVAudioFormat?
+    private var isGraphConfigured = false
     private var isOutputTapInstalled = false
     private var isRunning = false
     private var generation = 0
@@ -413,6 +415,15 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
         }
     }
 
+    /// A Core Audio teardown can block indefinitely after a USB route failure.
+    /// Keep the old engine alive until a background queue can release it, so
+    /// replacing a stuck transport never releases AVAudioEngine on the UI thread.
+    func retire() {
+        Self.retirementQueue.async { [self] in
+            stop()
+        }
+    }
+
     /// Tears down every AVAudioEngine object instead of reusing a graph that Core Audio may
     /// have left in a non-rendering state after repeated route starts/stops.
     func rebuildAudioGraph(completion: @escaping @Sendable () -> Void = {}) {
@@ -432,6 +443,7 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
             engine.attach(limiter)
 
             clickFormat = nil
+            isGraphConfigured = false
             normalClick = nil
             accentClick = nil
             kickBuffers = []
@@ -556,7 +568,17 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
             generation += 1
             timer?.cancel()
             timer = nil
+            // A player-node stop can wait on the USB render thread forever.
+            // Pause rendering before clearing the already-scheduled count-in.
+            engine.pause()
             player.stop()
+            do {
+                try engine.start()
+            } catch {
+                stopAllAudio(publishStatus: false)
+                onStatusChanged(.error("Could not restart the click: \(error.localizedDescription)"))
+                return
+            }
             player.play()
             self.referenceBeats = referenceBeats.sorted {
                 $0.offsetNanoseconds == $1.offsetNanoseconds
@@ -611,7 +633,7 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
         // Replays reuse a healthy, silently rendering graph. Route changes and
         // explicit recovery still stop it, which forces a full configuration here.
         if !engine.isRunning {
-            try configureEngine()
+            if !isGraphConfigured { try configureEngine() }
             try engine.start()
         }
         player.play()
@@ -633,6 +655,7 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
     }
 
     private func configureEngine() throws {
+        isGraphConfigured = false
         removeOutputMeterIfNeeded()
         engine.stop()
         engine.reset()
@@ -691,6 +714,7 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
         engine.mainMixerNode.outputVolume = 1
         installOutputMeterIfNeeded()
         engine.prepare()
+        isGraphConfigured = true
     }
 
     private func configureLimiter() {
@@ -915,11 +939,13 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
         referenceBeatCursor = 0
         timer?.cancel()
         timer = nil
+        // Never stop a player node while its USB output graph is rendering.
+        // The graph remains configured and can resume on the next attempt.
+        if engine.isRunning { engine.pause() }
         player.stop()
         if kickMonitoringEnabled {
-            if !engine.isRunning {
-                beginKickMonitoringOnly()
-            } else {
+            do {
+                try engine.start()
                 if !kickPlayers.allSatisfy(\.isPlaying) {
                     kickPlayers.forEach { if !$0.isPlaying { $0.play() } }
                 }
@@ -927,6 +953,8 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
                     let outputName = selectedDeviceName ?? Self.defaultOutputDeviceName() ?? "System Default"
                     onStatusChanged(.monitoringKicks(outputName))
                 }
+            } catch {
+                onStatusChanged(.error("Could not resume kick monitoring: \(error.localizedDescription)"))
             }
         } else {
             // Kick players render silence when they have no scheduled buffers.
@@ -949,6 +977,7 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
         // node stop while the USB render thread is active can synchronously wait
         // on AVFAudio's internal queue forever.
         engine.stop()
+        isGraphConfigured = false
         player.stop()
         kickPlayers.forEach { $0.stop() }
         onOutputLevelChanged(.silence)

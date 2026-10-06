@@ -91,6 +91,10 @@ final class AppState: ObservableObject {
     private let practiceAudioRecorder: PracticeAudioRecorder
     private var simulationTask: Task<Void, Never>?
     private var practiceFinishTask: Task<Void, Never>?
+    private var practiceAutoGoTask: Task<Void, Never>?
+    private var practiceAutoGoID: UUID?
+    private var practiceAutoGoDeadline: UInt64?
+    private var isPracticeViewVisible = false
     private var playbackArmTask: Task<Void, Never>?
     private var playbackTimeoutTask: Task<Void, Never>?
     private var playbackSourceTask: Task<Void, Never>?
@@ -405,7 +409,18 @@ final class AppState: ObservableObject {
     @Published var practiceGhostContrastPoints = 18 {
         didSet { UserDefaults.standard.set(practiceGhostContrastPoints, forKey: "DrumTrainer.practice.ghostContrastPoints") }
     }
-    @Published var practicePhase: PracticePhase = .idle
+    @Published var practiceAutoGoEnabled = false {
+        didSet {
+            if !practiceAutoGoEnabled { cancelPracticeAutoGoCountdown() }
+        }
+    }
+    @Published var practiceAutoGoDelaySeconds = 8.0
+    @Published private(set) var practiceAutoGoSecondsRemaining: Int?
+    @Published var practicePhase: PracticePhase = .idle {
+        didSet {
+            if practicePhase != .results { cancelPracticeAutoGoCountdown() }
+        }
+    }
     @Published var practiceActivePattern: PracticePattern?
     @Published var practiceExpectedEvents: [ExpectedEvent] = []
     @Published var practiceOutcome: PracticeSessionOutcome?
@@ -631,15 +646,14 @@ final class AppState: ObservableObject {
     @discardableResult
     private func replaceMetronomeEngine() -> Bool {
         guard injectedMetronomeEngine == nil else { return false }
-        let previousEngine = metronomeEngine
+        guard let previousEngine = metronomeEngine as? MetronomeEngine else { return false }
         metronomeEngineGeneration &+= 1
         let replacement = makeMetronomeEngine(generation: metronomeEngineGeneration)
         metronomeEngine = replacement
 
-        // This is intentionally fire-and-forget. A healthy old queue shuts down;
-        // a poisoned queue is abandoned and can no longer update AppState because
-        // every callback is generation-gated above.
-        previousEngine.stop()
+        // A poisoned Core Audio graph may block even during deinit. Retire it on
+        // a background queue; the old callbacks are generation-gated above.
+        previousEngine.retire()
 
         replacement.updateSound(metronomeSound)
         replacement.updateGainDecibels(metronomeGainDecibels)
@@ -671,6 +685,7 @@ final class AppState: ObservableObject {
 
     func startPractice() {
         guard !practicePhase.isActive, !isRefreshingAudioEngine else { return }
+        cancelPracticeAutoGoCountdown()
         let externalStart = practiceExerciseMode == .importedSong && waitForExternalPlayback
         if externalStart {
             guard selectedPlaybackSourceID != nil else {
@@ -917,7 +932,6 @@ final class AppState: ObservableObject {
     /// Restores an idle, startable practice transport even if an earlier Core Audio
     /// rebuild never delivered its completion callback.
     func resetPracticeTransport() {
-        let shouldReplaceAudioTransport = practicePhase.isActive || isRefreshingAudioEngine
         stopWaitingForPlayback()
         discardActivePracticeAudio()
         if timingAlignmentPhase.isActive { cancelTimingAlignment() }
@@ -941,7 +955,9 @@ final class AppState: ObservableObject {
         practiceRecordedHitCount = 0
         practicePhase = .idle
         metronomeStallRecoveryAttempts = 0
-        if shouldReplaceAudioTransport, replaceMetronomeEngine() {
+        // Reset is also offered after a failed run and while idle. Those states
+        // can still hold a poisoned serial audio queue, so always replace it.
+        if replaceMetronomeEngine() {
             audioEngineRecoveryMessage = "Practice and its audio transport were reset. You can start again."
         } else {
             audioEngineRecoveryMessage = "Practice controls reset. You can start again or refresh the audio output."
@@ -956,6 +972,66 @@ final class AppState: ObservableObject {
         practiceExpectedEvents = []
         practiceRecordedHitCount = 0
         practicePhase = .idle
+    }
+
+    func setPracticeViewVisible(_ visible: Bool) {
+        isPracticeViewVisible = visible
+        if !visible { cancelPracticeAutoGoCountdown() }
+    }
+
+    private func cancelPracticeAutoGoCountdown() {
+        practiceAutoGoTask?.cancel()
+        practiceAutoGoTask = nil
+        practiceAutoGoID = nil
+        practiceAutoGoDeadline = nil
+        practiceAutoGoSecondsRemaining = nil
+    }
+
+    private var canAutoGoFromResults: Bool {
+        guard practiceAutoGoEnabled, isPracticeViewVisible, practicePhase == .results,
+              practiceOutcome != nil, !isRefreshingAudioEngine,
+              !microphoneCalibrationPhase.isActive, !timingAlignmentPhase.locksConfiguration else { return false }
+        // Find My Ceiling offers Done when the search finishes, rather than another round.
+        if !isExternalPlaybackRun, ceilingModeSettings.isEnabled,
+           let run = activeCeilingRun, case .found = run.phase { return false }
+        return true
+    }
+
+    private func schedulePracticeAutoGo() {
+        cancelPracticeAutoGoCountdown()
+        guard canAutoGoFromResults else { return }
+        let seconds = practiceAutoGoDelaySeconds.isFinite
+            ? min(max(practiceAutoGoDelaySeconds.rounded(), 1), 30) : 8
+        let id = UUID()
+        practiceAutoGoID = id
+        practiceAutoGoDeadline = timeline.hostTime(
+            addingNanoseconds: UInt64(seconds * 1_000_000_000), to: clock.currentHostTime()
+        )
+        practiceAutoGoSecondsRemaining = Int(seconds)
+        practiceAutoGoTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(100)) }
+                catch { return }
+                guard let self, self.practiceAutoGoID == id else { return }
+                self.handlePracticeAutoGoTimer(at: self.clock.currentHostTime())
+            }
+        }
+    }
+
+    func handlePracticeAutoGoTimer(at hostTime: UInt64) {
+        guard let deadline = practiceAutoGoDeadline else { return }
+        guard canAutoGoFromResults else {
+            cancelPracticeAutoGoCountdown()
+            return
+        }
+        if hostTime < deadline {
+            let remaining = timeline.converter.nanoseconds(forHostTimeDuration: deadline - hostTime)
+            practiceAutoGoSecondsRemaining = Int(ceil(Double(remaining) / 1_000_000_000))
+            return
+        }
+        // Follow the same replay path as Play Again / Next Round / Re-arm.
+        dismissPracticeResults()
+        startPractice()
     }
 
     var isCustomSequence: Bool { practiceExerciseMode == .custom && practiceCustomMeasure.isSequence }
@@ -1389,6 +1465,7 @@ final class AppState: ObservableObject {
     }
 
     func startMicrophoneCalibration() {
+        cancelPracticeAutoGoCountdown()
         if timingAlignmentPhase.isActive { cancelTimingAlignment() }
         guard let selectedAudioInputID,
               audioDevices.contains(where: { $0.id == selectedAudioInputID }) else {
@@ -1560,6 +1637,7 @@ final class AppState: ObservableObject {
     }
 
     func startTimingAlignment() {
+        cancelPracticeAutoGoCountdown()
         guard !isRefreshingAudioEngine else { return }
         guard !practicePhase.isActive, !microphoneCalibrationPhase.isActive else {
             timingAlignmentPhase = .error("Finish the active practice or microphone calibration first.")
@@ -2552,6 +2630,7 @@ final class AppState: ObservableObject {
             pendingPracticeBounds = nil
             practiceFinishTask = nil
             practicePhase = .results
+            schedulePracticeAutoGo()
             return
         }
         let sessionID = activePracticeSessionID ?? UUID()
@@ -2585,6 +2664,7 @@ final class AppState: ObservableObject {
         practiceFinishTask = nil
         practicePhase = .results
         metronomeEngine.stop()
+        schedulePracticeAutoGo()
     }
 
     private func exerciseDurationNanoseconds(

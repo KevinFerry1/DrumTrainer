@@ -38,6 +38,17 @@ struct PracticeView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 if let outcome = state.practiceOutcome, state.practicePhase == .results {
+                    if let seconds = state.practiceAutoGoSecondsRemaining {
+                        HStack(spacing: 12) {
+                            Label("Auto go · next round in \(seconds)s", systemImage: "repeat")
+                                .font(.headline)
+                                .monospacedDigit()
+                            Spacer()
+                            Button("Stop Auto go") { state.practiceAutoGoEnabled = false }
+                        }
+                        .padding(12)
+                        .background(.blue.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
+                    }
                     results(outcome)
                 } else {
                     configuration
@@ -49,6 +60,8 @@ struct PracticeView: View {
         }
         .navigationTitle("Practice")
         .task { state.startHardwareMonitoring() }
+        .onAppear { state.setPracticeViewVisible(true) }
+        .onDisappear { state.setPracticeViewVisible(false) }
         .alert(
             "Delete saved exercise?",
             isPresented: $showsDeleteSavedExerciseConfirmation,
@@ -281,6 +294,29 @@ struct PracticeView: View {
                     } else if let song = state.selectedImportedSong {
                         Text("Original \(Int(song.originalBPM.rounded())) BPM")
                             .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+
+                HStack(alignment: .top, spacing: 12) {
+                    Text("Repeat").frame(width: 72, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("Auto go", isOn: $state.practiceAutoGoEnabled)
+                            .toggleStyle(.switch)
+                        if state.practiceAutoGoEnabled {
+                            HStack(spacing: 12) {
+                                Text("Show results for")
+                                Slider(value: $state.practiceAutoGoDelaySeconds, in: 1...30, step: 1)
+                                    .frame(maxWidth: 240)
+                                    .accessibilityLabel("Auto go results delay")
+                                Text("\(Int(state.practiceAutoGoDelaySeconds)) seconds")
+                                    .monospacedDigit()
+                                    .frame(width: 86, alignment: .trailing)
+                            }
+                            Text("Start the next round automatically after results, with the usual count-in. Stop Auto go on the results screen to take a break.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Spacer()
                 }

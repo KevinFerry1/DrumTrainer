@@ -275,6 +275,163 @@ final class PracticeSessionRecordingTests: XCTestCase {
     }
 
     @MainActor
+    func testAutoGoWaitsForChosenDelayAndRepeatsWithFreshCountInAndHistory() throws {
+        let transport = ControllableTestMetronome()
+        let state = makeTransportState(transport)
+        state.setPracticeViewVisible(true)
+        XCTAssertFalse(state.practiceAutoGoEnabled)
+        state.practiceAutoGoEnabled = true
+        state.practiceAutoGoDelaySeconds = 10
+        state.practiceMeasures = 1
+        state.startPractice()
+        XCTAssertNil(state.practiceAutoGoSecondsRemaining)
+
+        for attempt in 0..<3 {
+            finishTransportPractice(state)
+            XCTAssertEqual(state.practicePhase, .results)
+            XCTAssertEqual(state.practiceHistory.count, attempt + 1)
+            XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 10)
+            state.handlePracticeAutoGoTimer(at: 5_000_000_100)
+            XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 5)
+            state.handlePracticeAutoGoTimer(at: 10_000_000_099)
+            XCTAssertEqual(state.practicePhase, .results)
+            XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 1)
+            state.handlePracticeAutoGoTimer(at: 10_000_000_100)
+            XCTAssertEqual(state.practicePhase, .countIn(beatsRemaining: 8))
+            XCTAssertNil(state.practiceOutcome)
+            XCTAssertNil(state.practiceAutoGoSecondsRemaining)
+            XCTAssertEqual(transport.startCount, attempt + 2)
+        }
+        XCTAssertEqual(Set(state.practiceHistory.map(\.id)).count, 3)
+        state.cancelPractice()
+    }
+
+    @MainActor
+    func testAutoGoCancellationAndManualReplayRejectPendingRestart() {
+        for action in 0..<7 {
+            let transport = ControllableTestMetronome()
+            let state = makeTransportState(transport)
+            state.setPracticeViewVisible(true)
+            state.practiceAutoGoEnabled = true
+            state.startPractice()
+            finishTransportPractice(state)
+            XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 8)
+            switch action {
+            case 0: state.practiceAutoGoEnabled = false
+            case 1: state.dismissPracticeResults()
+            case 2: state.cancelPractice()
+            case 3: state.resetPracticeTransport()
+            case 4:
+                state.setPracticeViewVisible(false)
+                state.setPracticeViewVisible(true)
+            case 5:
+                state.dismissPracticeResults()
+                state.startPractice()
+            default: state.startPractice()
+            }
+            XCTAssertNil(state.practiceAutoGoSecondsRemaining)
+            let phase = state.practicePhase
+            let startCount = transport.startCount
+            state.handlePracticeAutoGoTimer(at: 30_000_000_100)
+            XCTAssertEqual(state.practicePhase, phase)
+            XCTAssertEqual(transport.startCount, startCount)
+            state.cancelPractice()
+        }
+    }
+
+    @MainActor
+    func testAutoGoDoesNotScheduleWhenDisabledOrPracticeIsHidden() {
+        for enabled in [false, true] {
+            let transport = ControllableTestMetronome()
+            let state = makeTransportState(transport)
+            state.practiceAutoGoEnabled = enabled
+            state.setPracticeViewVisible(!enabled)
+            state.startPractice()
+            finishTransportPractice(state)
+            XCTAssertNil(state.practiceAutoGoSecondsRemaining)
+            state.handlePracticeAutoGoTimer(at: 30_000_000_100)
+            XCTAssertEqual(state.practicePhase, .results)
+            XCTAssertEqual(transport.startCount, 1)
+            state.dismissPracticeResults()
+        }
+    }
+
+    @MainActor
+    func testAutoGoUsesAdvancedTempoAndStopsWhenCeilingIsFound() throws {
+        for ceiling in [false, true] {
+            let transport = ControllableTestMetronome()
+            let state = makeTransportState(transport)
+            state.setPracticeViewVisible(true)
+            state.practiceAutoGoEnabled = true
+            state.practiceAutoGoDelaySeconds = 5
+            if ceiling {
+                state.ceilingModeSettings = CeilingModeSettings(isEnabled: true, stepBPM: 5)
+            } else {
+                state.tempoProgressionSettings = TempoProgressionSettings(
+                    isEnabled: true, stepBPM: 5, requiredCleanSessions: 1
+                )
+            }
+            state.startPractice()
+            finishTransportPractice(state, clean: true)
+            XCTAssertTrue(try XCTUnwrap(state.practiceHistory.first).isClean)
+            XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 5)
+            state.handlePracticeAutoGoTimer(at: 5_000_000_100)
+            XCTAssertEqual(state.practicePhase, .countIn(beatsRemaining: 8))
+            XCTAssertEqual(state.practiceBPM, 125)
+            finishTransportPractice(state)
+            if ceiling {
+                guard case .found = state.activeCeilingRun?.phase else { return XCTFail("Ceiling should be found") }
+                XCTAssertNil(state.practiceAutoGoSecondsRemaining)
+                state.handlePracticeAutoGoTimer(at: 30_000_000_100)
+                XCTAssertEqual(state.practicePhase, .results)
+                XCTAssertEqual(transport.startCount, 2)
+            }
+            state.cancelPractice()
+        }
+    }
+
+    @MainActor
+    func testAutoGoRearmsExternalPlaybackWithoutStartingClicks() async throws {
+        let transport = ControllableTestMetronome()
+        let listener = TestPlaybackListener()
+        let state = try makeExternalState(transport, listener: listener)
+        state.setPracticeViewVisible(true)
+        state.practiceAutoGoEnabled = true
+        state.startPractice()
+        let oldID = try XCTUnwrap(state.playbackArmID)
+        state.handleExternalPlaybackOnset(hostTime: 100, id: oldID)
+        state.finishPractice()
+        XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 8)
+        state.handlePracticeAutoGoTimer(at: 8_000_000_100)
+        XCTAssertEqual(state.practicePhase, .waitingForPlayback)
+        XCTAssertNotEqual(state.playbackArmID, oldID)
+        XCTAssertEqual(transport.startCount, 0)
+        XCTAssertTrue(state.practiceHistory.isEmpty)
+        state.cancelPractice()
+    }
+
+    @MainActor
+    private func finishTransportPractice(_ state: AppState, clean: Bool = false) {
+        for beat in 0..<9 {
+            state.handlePracticeTick(MetronomeTick(
+                hostTime: UInt64(1_000_000_000 + beat * 500_000_000),
+                beat: beat % 4 + 1, isAccent: beat.isMultiple(of: 4)
+            ))
+        }
+        guard case .running = state.practicePhase else { return XCTFail("Practice did not start") }
+        if clean {
+            for note in state.practiceExpectedEvents {
+                state.recordPracticeEvent(PerformanceEvent(
+                    source: .midi, voice: note.voice, hostTime: note.hostTime!,
+                    sessionTimeNanoseconds: note.sessionTimeNanoseconds,
+                    rawMetadata: .midi(channel: 9, note: 38, velocity: 100, endpointName: nil)
+                ))
+            }
+        }
+        state.finishPractice()
+    }
+
+    @MainActor
     func testSixtyPracticeReplaysCompleteCountInAndReturnToStartableState() throws {
         let transport = ControllableTestMetronome()
         let state = makeTransportState(transport)
