@@ -346,7 +346,7 @@ struct PracticeView: View {
                     HStack(spacing: 12) {
                         Color.clear.frame(width: 72, height: 1)
                         Label(
-                            "Suggested \(Int(progression.suggestedBPM.rounded())) BPM · \(progression.consecutiveCleanSessions)/\(state.tempoProgressionSettings.requiredCleanSessions) clean runs" +
+                            "Next advance: \(Int(state.nextTempoProgressionBPM.rounded())) BPM · \(progression.consecutiveCleanSessions)/\(state.tempoProgressionSettings.requiredCleanSessions) clean runs" +
                                 (progression.highestCleanBPM.map { " · best clean \(Int($0.rounded())) BPM" } ?? ""),
                             systemImage: "chart.line.uptrend.xyaxis"
                         )
@@ -861,12 +861,11 @@ struct PracticeView: View {
                 .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
             }
 
-            if let accentEvaluation {
-                accentResults(accentEvaluation, pattern: outcome.pattern)
-            }
-            if let ghostEvaluation {
-                ghostResults(ghostEvaluation, pattern: outcome.pattern)
-            }
+            dynamicsResults(
+                accentEvaluation: accentEvaluation,
+                ghostEvaluation: ghostEvaluation,
+                pattern: outcome.pattern
+            )
 
             GroupBox("Hit breakdown") {
                 HStack(spacing: 30) {
@@ -1220,6 +1219,33 @@ struct PracticeView: View {
         }
     }
 
+    @ViewBuilder
+    private func dynamicsResults(
+        accentEvaluation: AccentEvaluation?,
+        ghostEvaluation: GhostEvaluation?,
+        pattern: PracticePattern
+    ) -> some View {
+        if let accentEvaluation, let ghostEvaluation {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 16) {
+                    accentResults(accentEvaluation, pattern: pattern)
+                        .frame(minWidth: 560, maxWidth: .infinity)
+                    ghostResults(ghostEvaluation, pattern: pattern)
+                        .frame(minWidth: 560, maxWidth: .infinity)
+                }
+
+                VStack(alignment: .leading, spacing: 16) {
+                    accentResults(accentEvaluation, pattern: pattern)
+                    ghostResults(ghostEvaluation, pattern: pattern)
+                }
+            }
+        } else if let accentEvaluation {
+            accentResults(accentEvaluation, pattern: pattern)
+        } else if let ghostEvaluation {
+            ghostResults(ghostEvaluation, pattern: pattern)
+        }
+    }
+
     private func accentResults(
         _ evaluation: AccentEvaluation,
         pattern: PracticePattern
@@ -1227,7 +1253,7 @@ struct PracticeView: View {
         GroupBox("Accent dynamics") {
             VStack(alignment: .leading, spacing: 12) {
                 LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4),
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2),
                     spacing: 12
                 ) {
                     metricCard(
@@ -1252,7 +1278,7 @@ struct PracticeView: View {
                     )
                 }
 
-                ScrollView {
+                ScrollView([.horizontal, .vertical]) {
                     Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 7) {
                         GridRow {
                             Text("Position")
@@ -1332,7 +1358,7 @@ struct PracticeView: View {
         GroupBox("Ghost dynamics") {
             VStack(alignment: .leading, spacing: 12) {
                 LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4),
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2),
                     spacing: 12
                 ) {
                     metricCard(
@@ -1357,7 +1383,7 @@ struct PracticeView: View {
                     )
                 }
 
-                ScrollView {
+                ScrollView([.horizontal, .vertical]) {
                     Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 7) {
                         GridRow {
                             Text("Position")

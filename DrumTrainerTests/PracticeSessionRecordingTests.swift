@@ -357,6 +357,81 @@ final class PracticeSessionRecordingTests: XCTestCase {
     }
 
     @MainActor
+    func testTempoAutoAdvanceUsesPlayedBPMInsteadOfSavedSuggestion() throws {
+        for (suggestion, bpm, step, expected) in [
+            (120.0, 90.0, 5.0, 95.0),
+            (130.0, 90.0, 5.0, 95.0),
+            (95.0, 150.0, 7.0, 157.0),
+            (130.0, 238.0, 7.0, 240.0)
+        ] {
+            let state = makeTransportState(ControllableTestMetronome())
+            state.tempoProgressionSettings = TempoProgressionSettings(
+                isEnabled: true, stepBPM: step, requiredCleanSessions: 3
+            )
+            // An initial attempt at the default tempo leaves a saved suggestion.
+            state.startPractice()
+            finishTransportPractice(state)
+            XCTAssertEqual(state.currentTempoProgression?.suggestedBPM, 120)
+            state.tempoProgressions[0].suggestedBPM = suggestion
+            state.tempoProgressions[0].highestCleanBPM = 95
+            state.dismissPracticeResults()
+            state.practiceBPM = bpm
+            XCTAssertEqual(state.nextTempoProgressionBPM, expected)
+
+            for round in 1...3 {
+                state.startPractice()
+                finishTransportPractice(state, clean: true)
+                XCTAssertTrue(try XCTUnwrap(state.practiceHistory.first).isClean)
+                XCTAssertEqual(state.practiceHistory.first?.bpm, bpm)
+                XCTAssertEqual(state.practiceBPM, round == 3 ? expected : bpm)
+                XCTAssertEqual(state.currentTempoProgression?.consecutiveCleanSessions, round % 3)
+                XCTAssertEqual(state.currentTempoProgression?.suggestedBPM, round == 3 ? expected : bpm)
+                XCTAssertEqual(state.currentTempoProgression?.highestCleanBPM, max(95, bpm))
+                state.dismissPracticeResults()
+            }
+            XCTAssertEqual(
+                state.lastTempoProgressionMessage,
+                "Advanced \(state.practiceExercise.displayName) to \(Int(expected)) BPM."
+            )
+            state.resetPracticeTransport()
+        }
+    }
+
+    @MainActor
+    func testAutoGoRepeatsFromLoweredTempoAndUsesChangedRaiseAmount() throws {
+        let state = makeTransportState(ControllableTestMetronome())
+        state.tempoProgressionSettings = TempoProgressionSettings(
+            isEnabled: true, stepBPM: 5, requiredCleanSessions: 3
+        )
+        state.startPractice()
+        finishTransportPractice(state)
+        state.tempoProgressions[0].suggestedBPM = 130
+        state.tempoProgressions[0].highestCleanBPM = 95
+        state.dismissPracticeResults()
+        state.practiceBPM = 90
+        state.setPracticeViewVisible(true)
+        state.practiceAutoGoEnabled = true
+        state.practiceAutoGoDelaySeconds = 5
+        state.startPractice()
+
+        for round in 1...6 {
+            finishTransportPractice(state, clean: true)
+            let expectedBPM = round < 3 ? 90.0 : (round < 6 ? 95.0 : 102.0)
+            XCTAssertEqual(state.practiceBPM, expectedBPM)
+            state.handlePracticeAutoGoTimer(at: 5_000_000_100)
+            XCTAssertEqual(state.practicePhase, .countIn(beatsRemaining: 8))
+            XCTAssertEqual(state.practiceBPM, expectedBPM)
+            if round == 3 {
+                state.tempoProgressionSettings.stepBPM = 7
+                state.saveTempoProgressionSettings()
+                XCTAssertEqual(state.nextTempoProgressionBPM, 102)
+            }
+        }
+        XCTAssertEqual(state.practiceHistory.prefix(6).map(\.bpm), [95, 95, 95, 90, 90, 90])
+        state.resetPracticeTransport()
+    }
+
+    @MainActor
     func testAutoGoUsesAdvancedTempoAndStopsWhenCeilingIsFound() throws {
         for ceiling in [false, true] {
             let transport = ControllableTestMetronome()

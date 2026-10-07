@@ -2744,6 +2744,10 @@ final class AppState: ObservableObject {
         }
     }
 
+    var nextTempoProgressionBPM: Double {
+        min(practiceBPM + tempoProgressionSettings.stepBPM, 240)
+    }
+
     var currentTempoProgression: ExerciseTempoProgression? {
         let identity = currentExerciseIdentity
         let id = tempoProgressionID(
@@ -2969,6 +2973,8 @@ final class AppState: ObservableObject {
         }
 
         tempoProgressions[index].updatedAt = summary.completedAt
+        // Keep archived suggestions in sync, but never use them to choose a raise.
+        tempoProgressions[index].suggestedBPM = summary.bpm
         if summary.isClean {
             tempoProgressions[index].highestCleanBPM = max(
                 tempoProgressions[index].highestCleanBPM ?? summary.bpm,
@@ -2986,8 +2992,7 @@ final class AppState: ObservableObject {
             let count = tempoProgressions[index].consecutiveCleanSessions
             if count >= tempoProgressionSettings.requiredCleanSessions {
                 let nextBPM = min(
-                    max(tempoProgressions[index].suggestedBPM, summary.bpm)
-                        + tempoProgressionSettings.stepBPM,
+                    summary.bpm + tempoProgressionSettings.stepBPM,
                     240
                 )
                 tempoProgressions[index].suggestedBPM = nextBPM

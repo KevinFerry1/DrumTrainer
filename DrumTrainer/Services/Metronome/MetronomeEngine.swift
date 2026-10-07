@@ -133,6 +133,42 @@ enum AudioLevelMeasurement {
     }
 }
 
+/// The tap owns only this PCM mailbox, never an AVAudioEngine or one of its nodes.
+/// AVAudioPlayerNode.stop() drains AVFAudio's tap-message queue while holding the
+/// engine lock. Reading even `limiter.audioUnit` from that queue inverts those
+/// locks and deadlocks every engine in the process, including replacements.
+final class MetronomeOutputMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latestLevel = AppOutputLevel.silence
+
+    func measure(_ buffer: AVAudioPCMBuffer) {
+        guard let channels = buffer.floatChannelData, buffer.frameLength > 0 else { return }
+        var peak = 0.0
+        var sumSquares = 0.0
+        let channelCount = Int(buffer.format.channelCount)
+        let frameCount = Int(buffer.frameLength)
+        for channel in 0..<channelCount {
+            let samples = channels[channel]
+            for frame in 0..<frameCount {
+                let value = Double(samples[frame])
+                peak = max(peak, abs(value))
+                sumSquares += value * value
+            }
+        }
+        let rms = sqrt(sumSquares / Double(max(channelCount * frameCount, 1)))
+        let level = AppOutputLevel(
+            peakDBFS: AudioLevelMeasurement.decibelsFS(forAmplitude: peak),
+            rmsDBFS: AudioLevelMeasurement.decibelsFS(forAmplitude: rms),
+            limiterReductionDB: 0
+        )
+        lock.withLock { latestLevel = level }
+    }
+
+    func snapshot() -> AppOutputLevel {
+        lock.withLock { latestLevel }
+    }
+}
+
 struct MetronomeSchedulingHealth: Equatable, Sendable {
     let warningThresholdMilliseconds: Double
     private(set) var scheduledTickCount = 0
@@ -280,7 +316,8 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
     private let onHealthChanged: HealthHandler
     private let onOutputLevelChanged: OutputLevelHandler
     private let onOutputLatencyChanged: OutputLatencyHandler
-    private var engine = AVAudioEngine()
+    private let audioEngineFactory: @Sendable () -> AVAudioEngine
+    private var engine: AVAudioEngine
     private var player = AVAudioPlayerNode()
     private var kickPlayers = (0..<MetronomeEngine.kickPolyphony).map { _ in AVAudioPlayerNode() }
     private var appMixer = AVAudioMixerNode()
@@ -289,6 +326,8 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
     private let listenerQueue = DispatchQueue(label: "DrumTrainer.MetronomeDeviceListener")
 
     private var timer: DispatchSourceTimer?
+    private var outputMeterTimer: DispatchSourceTimer?
+    private var outputMeter = MetronomeOutputMeter()
     private var deviceListener: AudioObjectPropertyListenerBlock?
     private var selectedDeviceID: AudioDeviceID?
     private var selectedDeviceName: String?
@@ -327,7 +366,8 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
         onTick: @escaping TickHandler,
         onHealthChanged: @escaping HealthHandler,
         onOutputLevelChanged: @escaping OutputLevelHandler = { _ in },
-        onOutputLatencyChanged: @escaping OutputLatencyHandler = { _ in }
+        onOutputLatencyChanged: @escaping OutputLatencyHandler = { _ in },
+        audioEngineFactory: @escaping @Sendable () -> AVAudioEngine = { AVAudioEngine() }
     ) {
         self.onDevicesChanged = onDevicesChanged
         self.onStatusChanged = onStatusChanged
@@ -335,6 +375,8 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
         self.onHealthChanged = onHealthChanged
         self.onOutputLevelChanged = onOutputLevelChanged
         self.onOutputLatencyChanged = onOutputLatencyChanged
+        self.audioEngineFactory = audioEngineFactory
+        self.engine = audioEngineFactory()
         engine.attach(player)
         kickPlayers.forEach(engine.attach)
         engine.attach(appMixer)
@@ -343,6 +385,7 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
 
     deinit {
         timer?.cancel()
+        outputMeterTimer?.cancel()
         engine.stop()
         player.stop()
         kickPlayers.forEach { $0.stop() }
@@ -392,10 +435,8 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
         engineQueue.async { [weak self] in
             guard let self else { return }
             self.bpm = min(max(bpm, 40), 240)
-            // AppState never intentionally starts a second exercise while one is
-            // active. Avoid stopping every player on an already-idle graph here:
-            // AVAudioPlayerNode.stop() can wait forever after a USB route change,
-            // which previously stranded this serial queue before beginPlayback().
+            // An idle graph already has no queued clicks. Only an active restart
+            // needs playback cleared before scheduling the new count-in.
             if isRunning {
                 stopMetronomePlayback(publishStatus: false)
             } else {
@@ -432,7 +473,7 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
             stopAllAudio(publishStatus: false)
             removeOutputMeterIfNeeded()
 
-            engine = AVAudioEngine()
+            engine = audioEngineFactory()
             player = AVAudioPlayerNode()
             kickPlayers = (0..<Self.kickPolyphony).map { _ in AVAudioPlayerNode() }
             appMixer = AVAudioMixerNode()
@@ -568,8 +609,8 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
             generation += 1
             timer?.cancel()
             timer = nil
-            // A player-node stop can wait on the USB render thread forever.
-            // Pause rendering before clearing the already-scheduled count-in.
+            // Clear the queued count-in before adopting the song's timeline.
+            // The meter tap must not acquire node/engine locks while stop drains it.
             engine.pause()
             player.stop()
             do {
@@ -666,7 +707,8 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
 
         // Resolve System Default explicitly: an existing output unit can otherwise
         // remain bound to the previously selected USB interface.
-        if let outputDeviceID = selectedDeviceID ?? Self.defaultOutputDeviceID() {
+        if !engine.isInManualRenderingMode,
+           let outputDeviceID = selectedDeviceID ?? Self.defaultOutputDeviceID() {
             guard Self.availableDevices().contains(where: { $0.id == outputDeviceID }) else {
                 throw MetronomeEngineError.outputUnavailable(selectedDeviceName ?? "Selected output")
             }
@@ -740,6 +782,7 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
     }
 
     private func limiterReductionDecibels() -> Double {
+        dispatchPrecondition(condition: .onQueue(engineQueue))
         var value: AudioUnitParameterValue = 0
         let status = AudioUnitGetParameter(
             limiter.audioUnit,
@@ -792,39 +835,37 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
 
     private func installOutputMeterIfNeeded() {
         guard !isOutputTapInstalled else { return }
-        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1_024, format: nil) { [weak self] buffer, _ in
-            self?.measureOutput(buffer)
+        let meter = MetronomeOutputMeter()
+        outputMeter = meter
+        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1_024, format: nil) { buffer, _ in
+            // No graph/node access, queue synchronization, or client callbacks
+            // here. stop()/reset() may be waiting for this callback to return.
+            meter.measure(buffer)
         }
         isOutputTapInstalled = true
+        let meterTimer = DispatchSource.makeTimerSource(queue: engineQueue)
+        meterTimer.schedule(deadline: .now(), repeating: .milliseconds(50), leeway: .milliseconds(5))
+        meterTimer.setEventHandler { [weak self] in
+            guard let self, engine.isRunning else { return }
+            let level = outputMeter.snapshot()
+            // Release the mailbox lock before accessing AVFAudio. All node/AU
+            // queries and UI publication belong to the engine control queue.
+            onOutputLevelChanged(AppOutputLevel(
+                peakDBFS: level.peakDBFS,
+                rmsDBFS: level.rmsDBFS,
+                limiterReductionDB: limiterReductionDecibels()
+            ))
+        }
+        outputMeterTimer = meterTimer
+        meterTimer.resume()
     }
 
     private func removeOutputMeterIfNeeded() {
+        outputMeterTimer?.cancel()
+        outputMeterTimer = nil
         guard isOutputTapInstalled else { return }
         engine.mainMixerNode.removeTap(onBus: 0)
         isOutputTapInstalled = false
-    }
-
-    private func measureOutput(_ buffer: AVAudioPCMBuffer) {
-        guard let channels = buffer.floatChannelData, buffer.frameLength > 0 else { return }
-        var peak = 0.0
-        var sumSquares = 0.0
-        let channelCount = Int(buffer.format.channelCount)
-        let frameCount = Int(buffer.frameLength)
-        for channel in 0..<channelCount {
-            let samples = channels[channel]
-            for frame in 0..<frameCount {
-                let value = Double(samples[frame])
-                peak = max(peak, abs(value))
-                sumSquares += value * value
-            }
-        }
-        let sampleCount = max(channelCount * frameCount, 1)
-        let rms = sqrt(sumSquares / Double(sampleCount))
-        onOutputLevelChanged(AppOutputLevel(
-            peakDBFS: AudioLevelMeasurement.decibelsFS(forAmplitude: peak),
-            rmsDBFS: AudioLevelMeasurement.decibelsFS(forAmplitude: rms),
-            limiterReductionDB: limiterReductionDecibels()
-        ))
     }
 
     private func startScheduleTimer(generation: Int) {
@@ -939,8 +980,9 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
         referenceBeatCursor = 0
         timer?.cancel()
         timer = nil
-        // Never stop a player node while its USB output graph is rendering.
-        // The graph remains configured and can resume on the next attempt.
+        // Clear queued clicks while preserving the configured graph for replay.
+        // Pausing alone does not make tap callbacks safe: the tap must remain
+        // independent of all engine/node locks while player.stop() drains it.
         if engine.isRunning { engine.pause() }
         player.stop()
         if kickMonitoringEnabled {
@@ -959,8 +1001,7 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
         } else {
             // Kick players render silence when they have no scheduled buffers.
             // Keep them alive with the graph instead of stopping six nodes on
-            // every exercise boundary. One of these stop calls was the observed
-            // permanent Core Audio deadlock behind the stuck count-in.
+            // every exercise boundary.
             onOutputLevelChanged(.silence)
             if publishStatus { onStatusChanged(.stopped) }
         }
@@ -973,9 +1014,8 @@ final class MetronomeEngine: MetronomeControlling, @unchecked Sendable {
         referenceBeatCursor = 0
         timer?.cancel()
         timer = nil
-        // Stop hardware rendering before touching individual player nodes. A
-        // node stop while the USB render thread is active can synchronously wait
-        // on AVFAudio's internal queue forever.
+        // Stop hardware rendering before reconfiguring the route and clearing
+        // player queues. The PCM-only meter tap can safely drain during stop.
         engine.stop()
         isGraphConfigured = false
         player.stop()
