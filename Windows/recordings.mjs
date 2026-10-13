@@ -3,6 +3,7 @@ const key=id=>id.toLowerCase();
 const request=req=>new Promise((resolve,reject)=>{req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
 const complete=tx=>new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});
 export async function getTake(db,id){return request(db.transaction('takes').objectStore('takes').get(key(id)));}
+export async function allTakes(db){return request(db.transaction('takes').objectStore('takes').getAll());}
 export async function saveTake(db,id,blob,metadata={}){const tx=db.transaction('takes','readwrite');tx.objectStore('takes').put({id:key(id),blob,...metadata},key(id));await complete(tx);}
 export async function deleteTake(db,id){const tx=db.transaction('takes','readwrite');tx.objectStore('takes').delete(key(id));await complete(tx);}
 async function deleteChunks(db,id){const tx=db.transaction('takeChunks','readwrite'),store=tx.objectStore('takeChunks'),range=IDBKeyRange.bound([id,0],[id,Number.MAX_SAFE_INTEGER]),cursor=store.openCursor(range);cursor.onsuccess=()=>{if(cursor.result){cursor.result.delete();cursor.result.continue();}};await complete(tx);}

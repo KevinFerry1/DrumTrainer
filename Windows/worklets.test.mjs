@@ -2,7 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';
 const processors=new Map();globalThis.sampleRate=48000;globalThis.currentFrame=0;
 globalThis.AudioWorkletProcessor=class{constructor(){this.messages=[];this.port={postMessage:(data)=>this.messages.push(data),onmessage:null};}};
 globalThis.registerProcessor=(name,ctor)=>processors.set(name,ctor);
-await import('./recording-worklet.mjs');await import('./output-worklet.mjs');await import('./kick-worklet.mjs');
+await import('./recording-worklet.mjs');await import('./output-worklet.mjs');await import('./kick-worklet.mjs');await import('./playback-worklet.mjs');
 test('actual recording worklet captures selected input, excludes count-in/tail and flushes final partial block',()=>{
  const Recorder=processors.get('recording-input'),node=new Recorder();node.port.onmessage({data:{type:'arm',start:1,end:2,indices:[1]}});
  const left=new Float32Array(128).fill(.1),right=Float32Array.from({length:128},(_,i)=>i/128);globalThis.currentFrame=0;node.process([[left,right]]);
@@ -20,4 +20,10 @@ test('actual kick worklet preserves onset frame while waiting for native spectra
  const Processor=processors.get('kick-input'),node=new Processor();node.port.onmessage({data:{threshold:.2,lockout:40}});
  for(let block=0;block<10;block++){globalThis.currentFrame=block*128;const input=new Float32Array(128);if(block===0)input[10]=.5;node.process([[input]]);}
  const hit=node.messages.find(m=>m.type==='hit');assert.ok(hit);assert.ok(Math.abs(hit.time-10/48000*1000)<1e-12);assert.ok(hit.features);assert.equal(node.messages.filter(m=>m.type==='hit').length,1);
+});
+
+test('playback worklet confirms sustained tab audio and reports its first loud frame once',()=>{
+ const Processor=processors.get('playback-input'),node=new Processor();node.port.onmessage({data:{thresholdDBFS:-45}});
+ for(let block=0;block<140;block++){globalThis.currentFrame=block*128;node.process([[new Float32Array(128).fill(block<120?0:.2)]]);}
+ const onset=node.messages.filter(m=>m.type==='onset');assert.equal(onset.length,1);assert.ok(Math.abs(onset[0].clock-320)<1e-8);assert.ok(node.messages.some(m=>m.type==='level'&&m.ready));
 });

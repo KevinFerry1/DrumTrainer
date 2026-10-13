@@ -19,6 +19,7 @@ swiftc -module-cache-path /private/tmp/DrumTrainer-native-fixture-modules \
   DrumTrainer/Domain/Patterns/KickPatternGenerator.swift \
   DrumTrainer/Domain/Scoring/EventMatcher.swift \
   DrumTrainer/Domain/Scoring/ScoringMetrics.swift \
+  DrumTrainer/Services/Calibration/TimingAlignmentCalibration.swift \
   DrumTrainer/Services/Timing/HostTimeConverter.swift \
   DrumTrainer/Services/Audio/KickSoundClassifier.swift \
   "$timeline" "$scoretimeline" \

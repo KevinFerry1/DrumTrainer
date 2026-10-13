@@ -32,3 +32,15 @@ extension PracticeCoachingSummary: Encodable {
         try c.encode(nextStep, forKey: .nextStep)
     }
 }
+
+extension TimingAlignmentMeasurement: Encodable {
+    private enum Keys: String, CodingKey { case compensationMilliseconds, medianAbsoluteDeviationMilliseconds, sampleCount, referenceCount, missedCount }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(compensationMilliseconds, forKey: .compensationMilliseconds)
+        try c.encode(medianAbsoluteDeviationMilliseconds, forKey: .medianAbsoluteDeviationMilliseconds)
+        try c.encode(sampleCount, forKey: .sampleCount)
+        try c.encode(referenceCount, forKey: .referenceCount)
+        try c.encode(missedCount, forKey: .missedCount)
+    }
+}

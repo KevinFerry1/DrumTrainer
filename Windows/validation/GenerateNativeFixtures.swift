@@ -25,9 +25,10 @@ struct TimelineEntryFixture: Encodable {
     init(_ e: PracticeTimingTimelineEntry) { id = e.id; expectedEventID = e.expectedEventID; actualEventID = e.actualEventID; measure = e.measure; beat = e.beat; subdivision = e.subdivision; expectedVoice = e.expectedVoice; playedVoice = e.playedVoice; expectedTimeNanoseconds = e.expectedTimeNanoseconds; actualTimeNanoseconds = e.actualTimeNanoseconds; classification = e.classification; signedOffsetMilliseconds = e.signedOffsetMilliseconds; source = e.source; isProblem = e.isProblem; anchorTimeNanoseconds = e.anchorTimeNanoseconds }
 }
 struct GeometryFixture: Encodable { let measure: Int; let slot: Double; let slotsPerMeasure: Int; let measureWidth: Double; let position: Double }
+struct AlignmentFixture: Encodable { var name: String; var source: EventSource; var voice: DrumVoice?; var references: [Int64]; var events: [PerformanceEvent]; var maximumOffsetMilliseconds: Double; var measurement: TimingAlignmentMeasurement? }
 struct GeneratedPattern: Codable { var exercise: String; var pattern: PracticePattern }
 struct FeatureFixture: Codable { var sampleRate: Double; var samples: [Double]; var features: AudioTransientFeatures? }
-struct NativeFixtureArchive: Encodable { var patterns: [GeneratedPattern]; var scoring: [NativeFixture]; var audio: [FeatureFixture]; var signature: KickSoundSignature?; var geometry: [GeometryFixture] }
+struct NativeFixtureArchive: Encodable { var patterns: [GeneratedPattern]; var scoring: [NativeFixture]; var audio: [FeatureFixture]; var signature: KickSoundSignature?; var geometry: [GeometryFixture]; var alignment: [AlignmentFixture] }
 
 @main struct GenerateNativeFixtures {
     static func expected(_ time: Double, _ voice: DrumVoice = .kick, allowed: Set<DrumVoice> = [], group: UUID? = nil,
@@ -67,6 +68,24 @@ struct NativeFixtureArchive: Encodable { var patterns: [GeneratedPattern]; var s
         let coaching = PracticeResultCoach().summarize(PracticeSessionOutcome(pattern: pattern, actualEvents: a, matchResults: matches, metrics: metrics))
         return NativeFixture(name: name, expected: expected, actual: actual, gradeKicks: gradeKicks, corrections: corrections, voiceCorrections: voiceCorrections,
                              matchResults: matches, metrics: metrics, accents: accents, ghosts: ghosts, stableTiming: stable, timeline: TimelineFixture(PracticeTimingTimeline(pattern: pattern, actualEvents: a, matchResults: matches)), coaching: coaching, clean: clean)
+    }
+    static func alignmentFixtures() -> [AlignmentFixture] {
+        let references = (0..<12).map { Int64($0) * 1_000_000_000 }
+        let cases: [(String, EventSource, DrumVoice?, [Int64], [PerformanceEvent], Double)] = [
+            ("median shared MIDI offset", .midi, nil, references, (0..<12).map { actual(Double($0) * 1000 + 42 + Double($0 % 3 - 1) * 3, .snare) }, 400),
+            ("microphone source and voice isolation", .microphone, .kick, [0, 1_000_000_000], [actual(20, .snare), actual(35, velocity: nil, source: .microphone), actual(1030, .snare, source: .microphone), actual(1060, velocity: nil, source: .microphone)], 400),
+            ("nearest unused event once per click", .midi, nil, [0, 1_000_000_000], [actual(-100), actual(20), actual(60), actual(990)], 400),
+            ("400 ms inclusive boundary", .midi, nil, [0, 1_000_000_000], [actual(400), actual(1400.000001)], 400),
+            ("MIDI accepts every known drum", .midi, nil, [0, 1_000_000_000, 2_000_000_000], [actual(10,.snare),actual(1020,.highTom),actual(2030,.closedHiHat),actual(0,.unknown),actual(1000,.metronome)], 400),
+            ("raw early bias and broad variation", .midi, nil, references, (0..<12).map { actual(Double($0) * 1000 - 100 + Double($0 % 4 - 2) * 65) }, 400),
+            ("no matching evidence", .midi, nil, references, [actual(500)], 400),
+            ("empty alignment", .midi, nil, [], [], 400)
+        ]
+        return cases.map { name, source, voice, refs, events, maximum in
+            var collector = TimingAlignmentCollector(source: source, voice: voice)
+            refs.forEach { collector.recordReference($0) }; events.forEach { collector.record($0) }
+            return AlignmentFixture(name: name, source: source, voice: voice, references: refs, events: events, maximumOffsetMilliseconds: maximum, measurement: collector.measurement(maximumOffsetMilliseconds: maximum))
+        }
     }
     static func main() throws {
         var patterns: [GeneratedPattern] = []
@@ -141,7 +160,7 @@ struct NativeFixtureArchive: Encodable { var patterns: [GeneratedPattern]; var s
         }
         let archive = NativeFixtureArchive(patterns: patterns, scoring: tests, audio: features,
             signature: classifier.makeSignature(from: features.compactMap(\.features)),
-            geometry: [2, 3, 4].flatMap { perBeat in [330.0, 460.0].flatMap { width in [-0.35, 0.0, 1.0, Double(perBeat * 4)].map { slot in GeometryFixture(measure: 2, slot: slot, slotsPerMeasure: perBeat * 4, measureWidth: width, position: PracticeScoreTimeline.notePosition(measure: 2, slot: slot, slotsPerMeasure: perBeat * 4, measureWidth: width)) } } })
+            geometry: [2, 3, 4].flatMap { perBeat in [330.0, 460.0].flatMap { width in [-0.35, 0.0, 1.0, Double(perBeat * 4)].map { slot in GeometryFixture(measure: 2, slot: slot, slotsPerMeasure: perBeat * 4, measureWidth: width, position: PracticeScoreTimeline.notePosition(measure: 2, slot: slot, slotsPerMeasure: perBeat * 4, measureWidth: width)) } } }, alignment: alignmentFixtures())
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(archive)
         let path = CommandLine.arguments.dropFirst().first ?? "Windows/validation/native-fixtures.json"

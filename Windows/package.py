@@ -21,7 +21,7 @@ with ZipFile(source_zip, 'w', ZIP_DEFLATED) as archive:
         if path.is_file() and '.DS_Store' not in path.parts and 'xcuserdata' not in path.parts:
             archive.write(path, Path('DrumTrainer-Mac-source') / path.relative_to(repo))
 
-runtime = ['index.html', 'style.css', 'app.mjs', 'core.mjs', 'native-scoring.mjs', 'audio-core.mjs', 'midi.mjs', 'legacy-data.mjs', 'practice-progress.mjs', 'backup-state.mjs', 'timing-timeline.mjs', 'notation.mjs', 'coaching.mjs', 'sound-synthesis.mjs', 'output-worklet.mjs', 'recordings.mjs', 'recording-core.mjs', 'recording-worklet.mjs', 'kick-worklet.mjs', 'Start DrumTrainer.cmd', 'Start-DrumTrainer.ps1', 'README.md']
+runtime = ['index.html', 'style.css', 'app.mjs', 'core.mjs', 'native-scoring.mjs', 'audio-core.mjs', 'midi.mjs', 'legacy-data.mjs', 'practice-progress.mjs', 'backup-state.mjs', 'timing-alignment.mjs', 'playback-onset.mjs', 'playback-worklet.mjs', 'playback-capture.mjs', 'portable-zip.mjs', 'timing-timeline.mjs', 'notation.mjs', 'coaching.mjs', 'sound-synthesis.mjs', 'output-worklet.mjs', 'recordings.mjs', 'recording-core.mjs', 'recording-worklet.mjs', 'kick-worklet.mjs', 'Start DrumTrainer.cmd', 'Start-DrumTrainer.ps1', 'README.md']
 output = dest / 'DrumTrainer-Windows.zip'
 with ZipFile(output, 'w', ZIP_DEFLATED) as archive:
     for name in runtime:

@@ -4,11 +4,15 @@ import {parseMIDI,validateSong,songMeasures,songBPM,firstSongMeasure,makeSongPat
 import {convertNativeArchives,rescoreSession,compactSession,hydrateSession} from './legacy-data.mjs';
 import {emptyProgress,exerciseIdentity,prepareCeiling,recordProgress,mergeNativeProgress} from './practice-progress.mjs';
 import {clickSounds,kickSounds,clickSamples,kickSamples,kickDynamics} from './sound-synthesis.mjs';
+import {TimingAlignmentCollector} from './timing-alignment.mjs';
+import {PlaybackCapture} from './playback-capture.mjs';
+import {playbackStart} from './playback-onset.mjs';
+import {portableZIP} from './portable-zip.mjs';
 import {timingTimeline,filterTimeline,renderTimingChart} from './timing-timeline.mjs';
 import {evaluateDynamics} from './native-scoring.mjs';
 import {drawNotation} from './notation.mjs';
 import {summarizePractice} from './coaching.mjs';
-import {SessionRecorder,getTake,saveTake,deleteTake as removeTake} from './recordings.mjs';
+import {SessionRecorder,getTake,allTakes,saveTake,deleteTake as removeTake} from './recordings.mjs';
 const $ = id => document.getElementById(id);
 const text = (id,value) => { $(id).textContent = value; };
 const notice = message => text('notice',message);
@@ -20,6 +24,8 @@ try { settings = JSON.parse(localStorage.getItem(key) ?? '{}'); } catch { /* Def
 let library = [], sessions = [], nativeArchives = [], db = null;
 let songs = [], progress = emptyProgress(), deletedSessionIDs = [], deletedSongIDs = [], historyLimit = 50;
 let audio, midiAccess, stream, micNode, micSource, micMute, clickBus, scheduler, animation, autoTimer;
+let pendingAlignment=null;
+let playbackCapture=null,playbackTimeout=null;
 let ledgerLimit=200;
 let run = null, count = 0, peak = 0, noisePeaks = null, currentResult = null;
 let calibration = null, pendingProfile = null, soundRejected = 0, crosstalkRejected = 0, micEpoch = 0;
@@ -71,7 +77,7 @@ try {
 
 for(const [id,label]of Object.entries(clickSounds))$('clickSound').append(new Option(label,id));
 for(const [id,label]of Object.entries(kickSounds))$('kickSound').append(new Option(label,id));
-const settingControls = ['bpm','repeats','volume','kickSource','gradeKicks','threshold','lockout','auto','advance','soundFilter','guard','match','autoDelay','cleanRuns','advanceStep','ceiling','ceilingStep','practiceMode','sectionStart','sectionEnd','tolerance','accentFloorEnabled','accentFloor','accentContrast','ghostCeilingEnabled','ghostCeiling','ghostContrast','clickSound','clickGain','limiter','limiterCeiling','kickMonitor','kickMonitorSource','kickSound','kickGain','kickVelocity','kickMonitorLockout','recordAudio','recordInput','recordChannels','scoreView'];
+const settingControls = ['bpm','repeats','volume','kickSource','gradeKicks','threshold','lockout','auto','advance','soundFilter','guard','match','autoDelay','cleanRuns','advanceStep','ceiling','ceilingStep','practiceMode','sectionStart','sectionEnd','tolerance','accentFloorEnabled','accentFloor','accentContrast','ghostCeilingEnabled','ghostCeiling','ghostContrast','clickSound','clickGain','limiter','limiterCeiling','kickMonitor','kickMonitorSource','kickSound','kickGain','kickVelocity','kickMonitorLockout','recordAudio','recordInput','recordChannels','scoreView','externalPlayback','playbackOffset','playbackThreshold'];
 for (const id of settingControls) {
   if (settings[id] != null) {
     if ($(id).type === 'checkbox') $(id).checked = settings[id] === true;
@@ -219,6 +225,7 @@ function updateGuide() {
   const songMode=$('practiceMode').value==='song';$('songPanel').hidden=!songMode;
   text('guide',songMode?'Practice a mapped MIDI track with its tempo and meter changes; loop the selected section at your chosen tempo.':d.guide ?? (d.sequenceSteps ? 'Saved measure sequence. The sequence’s own repeats determine its length.' : 'Your custom measure, repeated on the selected grid.'));
   $('exercise').disabled=songMode||!!run;$('repeats').disabled=(!songMode&&!!d.sequenceSteps)||!!run;
+  $('start').textContent=songMode&&$('externalPlayback').checked?'Arm Songsterr companion':'Start exercise';
   settings.exercise = $('exercise').value;
   renderProgressStatus();
 }
@@ -311,16 +318,13 @@ function logHit(hit) {
   recent.unshift(`${new Date().toLocaleTimeString()}  ${voices[hit.voice] ?? hit.voice}  ${hit.source}${hit.note != null ? ` · note ${hit.note} · velocity ${hit.velocity}`:''}`);
   if (recent.length > 50) recent.pop(); text('log',recent.join('\n')); $('log').style.whiteSpace = 'pre-wrap';
 }
-function receive(hit) {
-  logHit(hit);
-  reinforceKick(hit);
+function receive(hit,{replay=false}={}) {
+  if(!replay){logHit(hit);reinforceKick(hit);}
+  if(run?.waiting){run.preRoll.push(hit);if(run.preRoll.length>512){const removed=run.preRoll.shift();run.latestDropped=Math.max(run.latestDropped??-Infinity,removed.clock);}return;}
   if (!run || run.demo || run.kind === 'click') return;
   const relative = hit.clock-run.start;
-  if (run.kind === 'alignment') {
-    if (hit.source !== run.source || relative < -run.beatMs*.4 || relative > run.duration+run.beatMs*.4) return;
-    const beat = Math.round(relative/run.beatMs);
-    const offset = relative-beat*run.beatMs;
-    if (beat >= 0 && beat < 12 && Math.abs(offset) <= run.beatMs*.4 && !run.alignments.has(beat)) run.alignments.set(beat,offset);
+  if(run.kind==='alignment'){
+    if(relative>=-run.beatMs&&relative<=run.duration)run.alignmentCollector.record({...hit,sessionTimeNanoseconds:Math.round(hit.clock*1e6)-Math.round(run.start*1e6)});
     return;
   }
   if (hit.voice === 'kick') {
@@ -424,18 +428,22 @@ function withError(fn) { return async (...args) => { try { await fn(...args); } 
 
 function setRunning(active) {
   const ids = ['start','demo','click','bpm','exercise','repeats','gradeKicks','kickSource','advance','threshold','lockout','alignMidi','alignMic','noise','connect','saveExercise','customName','grid','import','export','restoreNative','again','calibrateKick','saveCalibration','soundFilter','guard','match','practiceMode','song','songTrack','midiFile','deleteSong','sectionStart','sectionEnd','autoDelay','cleanRuns','advanceStep','ceiling','ceilingStep','tolerance','accentFloorEnabled','accentFloor','accentContrast','ghostCeilingEnabled','ghostCeiling','ghostContrast','editTool','loadExercise','updateExercise','deleteExercise','sequenceName','sequenceRepeats','sequenceMeasure','addSequenceStep','saveSequence','updateSequence','saveSessionNotes','rescore','deleteSession'];
-  ids.push('recordAudio','recordInput','recordChannels','takeFile','takeFolder','deleteTake','downloadTake');
+  ids.push('externalPlayback','playbackOffset','playbackThreshold');
+  ids.push('recordAudio','recordInput','recordChannels','takeFile','takeFolder','deleteTake','downloadTake','exportBundle');
   for (const id of ids) $(id).disabled = active;
   for (const button of $('editor').querySelectorAll('button')) button.disabled = active;
   for (const control of $('sequenceSteps').querySelectorAll('button,input')) control.disabled = active;
+  $('saveAlignment').disabled=active||!pendingAlignment;
+  $('syncLost').disabled=!run?.external;
   $('stop').disabled = !active; $('repeats').disabled = active || ($('practiceMode').value!=='song'&&!!selectedDefinition().sequenceSteps);
   $('exercise').disabled=active||$('practiceMode').value==='song';
   $('saveCalibration').disabled = active || !pendingProfile;
 }
 function clearAuto() { clearTimeout(autoTimer); autoTimer = null; }
 function cancel(message) {
-  finishGeneration++;
+  finishGeneration++;pendingAlignment=null;$('alignmentReview').hidden=true;
   if(starting)starting.canceled=true;
+  clearTimeout(playbackTimeout);playbackTimeout=null;playbackCapture?.stop();playbackCapture=null;
   if(activeRecorder){const recorder=activeRecorder;activeRecorder=null;recorder.abort().catch(error=>notice(`Could not clean up interrupted audio: ${error.message}`));}
   $('takePlayer').pause();
   micEpoch++; cancelCalibration(); crosstalk.reset();
@@ -448,9 +456,11 @@ async function begin(kind='practice',demo=false,source=null){
   try{await beginAttempt(kind,demo,source,token);}catch(error){if(!token.canceled)cancel();throw error;}finally{if(starting===token)starting=null;if(!run)setRunning(false);}
 }
 async function beginAttempt(kind = 'practice',demo = false,source = null,token) {
+  const external=kind==='practice'&&!demo&&$('practiceMode').value==='song'&&$('externalPlayback').checked;
+  if(external&&Number($('repeats').value)!==1)throw new Error('Songsterr companion supports one pass. Set repeats to 1 and turn off Songsterr looping and count-in.');
   let pattern;
   if (kind === 'practice') {
-    if(!demo&&$('ceiling').checked){const identity=currentIdentity();$('bpm').value=prepareCeiling(progress,identity,Number($('bpm').value));await persist();}
+    if(!demo&&!external&&$('ceiling').checked){const identity=currentIdentity();$('bpm').value=prepareCeiling(progress,identity,Number($('bpm').value));await persist();}
     pattern = selectedPattern();
     if (!demo) {
       const needsMidi = pattern.notes.some(n => n.voice !== 'kick') || ($('gradeKicks').checked && $('kickSource').value !== 'microphone');
@@ -460,7 +470,7 @@ async function beginAttempt(kind = 'practice',demo = false,source = null,token) 
       if (!$('gradeKicks').checked && pattern.notes.every(n => n.voice === 'kick')) throw new Error('This exercise contains only kicks. Enable Grade kicks or choose a full-kit exercise.');
     }
   }
-  const bpm = Number($('bpm').value);
+  const bpm = kind==='alignment'?60:Number($('bpm').value);
   if (!Number.isFinite(bpm) || bpm < 40 || bpm > 240) throw new Error('Use 40–240 BPM.');
   if (kind === 'alignment') {
     if (source === 'midi' && !midiAccess?.inputs.get($('midi').value)) throw new Error('Connect and select a MIDI input first.');
@@ -468,33 +478,49 @@ async function beginAttempt(kind = 'practice',demo = false,source = null,token) 
   }
   const opts = {...scoringOptions(),gradeKicks:$('gradeKicks').checked,corrections:corrections()};
   if (Object.values(opts.corrections).some(v => !Number.isFinite(v) || Math.abs(v) > 500)) throw new Error('Timing correction must be between −500 and 500 ms.');
-  await ensureAudio();
+  let capturePromise=null;
+  if(external){
+    const capture=new PlaybackCapture({onLevel:(level,ready)=>text('playbackStatus',`${ready?'Ready — press Play in Songsterr now.':'Waiting for 0.3 seconds of quiet. Pause Songsterr.'} · ${level.toFixed(1)} dBFS`),onOnset:clock=>{try{startExternalPlayback(clock,capture);}catch(error){if(playbackCapture===capture)cancel(error.message);}},onError:message=>{if(playbackCapture===capture)cancel(message);}});playbackCapture=capture;capturePromise=capture.prepare();
+  }
+  await Promise.all([ensureAudio(),capturePromise]);
   if(token.canceled)return;
-  if(kind==='practice'&&!demo&&$('recordAudio').checked){
+  if(kind==='practice'&&!demo&&!external&&$('recordAudio').checked){
     const recorder=new SessionRecorder(db,audio,{onStatus:message=>text('recordStatus',message)});activeRecorder=recorder;
     await recorder.prepare($('recordInput').value==='follow'?$('microphone').value:$('recordInput').value,$('recordChannels').value);if(token.canceled){await recorder.abort();if(activeRecorder===recorder)activeRecorder=null;return;}
   }
   const beatMs = 60000/bpm, origin = audio.currentTime*1000+300;
-  run = {kind,demo,source,pattern,origin,start:origin+(kind === 'click' ? 0:8*beatMs),beatMs,duration:kind === 'click' ? Infinity : kind === 'alignment' ? 12*beatMs : pattern.duration,nextClick:0,evidence:[],options:opts,kickSource:$('kickSource').value,alignments:new Map(),late:0,exerciseId:$('exercise').value,devices:{midi:$('midi').selectedOptions[0]?.textContent,microphone:$('microphone').selectedOptions[0]?.textContent,output:$('output').selectedOptions[0]?.textContent}};
+  run = {external,waiting:external,preRoll:[],latestDropped:null,armedAt:audibleTime(),kind,demo,source,pattern,origin,start:origin+(kind === 'click' ? 0:8*beatMs),beatMs,duration:kind === 'click' ? Infinity : kind === 'alignment' ? 11*beatMs+600 : pattern.duration,nextClick:0,evidence:[],options:opts,kickSource:$('kickSource').value,alignments:new Map(),late:0,exerciseId:$('exercise').value,devices:{midi:$('midi').selectedOptions[0]?.textContent,microphone:$('microphone').selectedOptions[0]?.textContent,output:$('output').selectedOptions[0]?.textContent}};
+  if(external){run.start=Infinity;run.origin=Infinity;}
+  if(kind==='alignment')run.alignmentCollector=new TimingAlignmentCollector(source,source==='microphone'?'kick':null);
   run.identity=currentIdentity();
   run.id=crypto.randomUUID();if(activeRecorder)activeRecorder.arm(run.id,run.start,run.start+run.duration);
-  if(kind==='practice')run.clickPlan=[...Array.from({length:8},(_,i)=>({time:origin+i*beatMs,isAccent:i%4===0})),...pattern.referenceBeats.filter(b=>b.time<pattern.duration).map(b=>({time:run.start+b.time,isAccent:b.isAccent}))].sort((a,b)=>a.time-b.time);
+  if(kind==='practice'&&!external)run.clickPlan=[...Array.from({length:8},(_,i)=>({time:origin+i*beatMs,isAccent:i%4===0})),...pattern.referenceBeats.filter(b=>b.time<pattern.duration).map(b=>({time:run.start+b.time,isAccent:b.isAccent}))].sort((a,b)=>a.time-b.time);
   lastKick.clear(); currentResult = null; $('result').hidden = true; setRunning(true);
   if (demo) run.evidence = pattern.notes.map((n,i) => ({voice:n.voice,time:n.time+[-8,4,11,-3,6][i%5],clock:run.start+n.time,source:'simulation',velocity:n.accent ? 120:n.ghost ? 25:80}));
   notice(kind === 'alignment' ? `After 8 count-in clicks, play one ${source === 'microphone' ? 'kick':'MIDI pad'} hit on each of 12 clicks.` : demo ? 'Simulation: generated hits demonstrate the timeline and scoring. This run is not saved to history.' : kind === 'click' ? 'Metronome running. Cancel to stop.' : 'Eight count-in clicks. Begin playing when the practice playhead moves.');
   const activeRun = run;
+  if(external){text('recordStatus','Experimental companion runs do not save history, progress or audio.');text('playbackStatus','Starting capture. Keep Songsterr paused until Ready.');notice('Armed for Songsterr audio. Wait for Ready, then press Play in the shared tab.');await playbackCapture.listen(audio,Number($('playbackThreshold').value));if(run!==activeRun)return;playbackTimeout=setTimeout(()=>{if(run===activeRun&&activeRun.waiting)cancel('No playback start detected within 45 seconds. Pause Songsterr, check Share tab audio and the threshold, then re-arm.');},45000);}
   scheduler = setInterval(() => {
     if (run !== activeRun) return;
     const now = audio.currentTime*1000;
-    while ((activeRun.clickPlan ? activeRun.clickPlan[activeRun.nextClick]?.time??Infinity : activeRun.origin+activeRun.nextClick*beatMs) < now+140) {
+    while (!activeRun.external&&(activeRun.clickPlan ? activeRun.clickPlan[activeRun.nextClick]?.time??Infinity : activeRun.origin+activeRun.nextClick*beatMs) < now+140) {
       const when = activeRun.clickPlan ? activeRun.clickPlan[activeRun.nextClick].time:activeRun.origin+activeRun.nextClick*beatMs;
       if (when >= activeRun.start+activeRun.duration) break;
       if (when < now+10) { activeRun.late++; activeRun.nextClick++; continue; }
+      if(activeRun.kind==='alignment'&&when>=activeRun.start)activeRun.alignmentCollector.recordReference(Math.round(when*1e6)-Math.round(activeRun.start*1e6));
       clickAt(when/1000,activeRun.clickPlan ? activeRun.clickPlan[activeRun.nextClick].isAccent:activeRun.nextClick%4 === 0); activeRun.nextClick++;
     }
     const inputTail = activeRun.kind === 'practice' ? Math.max(0,...Object.values(activeRun.options.corrections)):0;
-    if (audibleTime() > activeRun.start+activeRun.duration+180+inputTail) finish();
+    if (audibleTime() > activeRun.start+activeRun.duration+(activeRun.kind==='alignment'?0:(activeRun.options.tolerance??100)+80+inputTail)) finish();
   },25);
+}
+
+function startExternalPlayback(clock,capture){
+  if(playbackCapture!==capture||!run?.waiting)return;
+  const active=run,start=playbackStart({onset:clock,now:audibleTime(),armedAt:active.armedAt,offset:Number($('playbackOffset').value),duration:active.duration,tolerance:active.options.tolerance,latestDropped:active.latestDropped}),preRoll=active.preRoll;
+  clearTimeout(playbackTimeout);playbackTimeout=null;capture.stop();playbackCapture=null;active.preRoll=[];active.waiting=false;active.start=start;active.origin=start;
+  for(const hit of preRoll)receive(hit,{replay:true});
+  notice('Audio start detected — alignment unverified. Pauses, seeks, loops and tempo changes are not followed. This experimental run is not saved.');text('playbackStatus','Running against the fixed MIDI timeline. Use Sync lost if playback changes.');
 }
 
 async function finish() {
@@ -504,30 +530,29 @@ async function finish() {
   const recorder=activeRecorder;activeRecorder=null;
   try{
   clearScheduled(); run = null; setRunning(true); text('phase','COMPLETE'); text('position','Run complete');
-  if (completed.kind === 'alignment') {
-    const offsets = [...completed.alignments.values()], correction = median(offsets);
-    if (offsets.length < 8 || median(offsets.map(v => Math.abs(v-correction))) > 40 || completed.late) {
-      notice('Alignment was too inconsistent to save. Repeat with one hit on each of 12 clicks; keep this window visible.'); return;
-    }
-    saveCorrection(completed.source,Math.round(correction));
-    notice(`Saved ${Math.round(correction)} ms ${completed.source === 'midi' ? 'MIDI':'microphone'} correction from ${offsets.length} clicks for the selected input/output. This includes your playing bias.`); return;
+  if(completed.kind==='alignment'){
+    const measurement=completed.alignmentCollector.measurement();
+    if(!measurement||measurement.sampleCount<8||completed.late){notice('Not enough reliably timed hits were detected. Retry at 60 BPM, using one comfortable MIDI pad or the kick microphone once on each of 12 clicks.');return;}
+    pendingAlignment={...measurement,compensationMilliseconds:Math.min(Math.max(measurement.compensationMilliseconds,-250),250),source:completed.source,key:inputKey(completed.source),devices:completed.devices,createdAt:new Date().toISOString()};
+    $('alignmentReview').hidden=false;text('alignmentMeasurement',`${completed.source==='midi'?'All e-kit MIDI drums':'Kick microphone'} · ${pendingAlignment.compensationMilliseconds.toFixed(1)} ms compensation · ${measurement.medianAbsoluteDeviationMilliseconds.toFixed(1)} ms spread · ${measurement.sampleCount}/${measurement.referenceCount} clicks matched.`);
+    notice('Review the measured alignment, then Save & Apply. Positive compensation moves the input earlier for scoring; raw timestamps are preserved.');return;
   }
   completed.options.dropped = (completed.options.dropped ?? 0)+completed.late;
   const metrics = score(completed.pattern,completed.evidence,completed.options);
-  const session = {id:completed.id,name:completed.pattern.name,bpm:completed.pattern.bpm,date:new Date().toISOString(),pattern:completed.pattern,evidence:completed.evidence,metrics,options:completed.options,devices:completed.devices,demo:completed.demo,exerciseKind:completed.identity.kind,customExerciseID:completed.identity.customExerciseID,importedSongID:completed.identity.importedSongID,notes:'',tags:[]};
+  const session = {id:completed.id,name:completed.pattern.name,bpm:completed.pattern.bpm,date:new Date().toISOString(),pattern:completed.pattern,evidence:completed.evidence,metrics,options:completed.options,devices:completed.devices,demo:completed.demo,experimental:completed.external,exerciseKind:completed.identity.kind,customExerciseID:completed.identity.customExerciseID,importedSongID:completed.identity.importedSongID,notes:'',tags:[]};
   if(recorder){setRunning(true);try{session.audio=await recorder.finish({inputName:$('recordInput').selectedOptions[0]?.textContent,channelSelection:$('recordChannels').value});}catch(error){session.audioError=error.message;text('recordStatus',`Recording failed: ${error.message}`);}finally{setRunning(true);}}
   if(generation===finishGeneration){currentResult = session;showResult(session);}
   let decision={found:false};
-  if (!completed.demo) {
+  if (!completed.demo&&!completed.external) {
     sessions.unshift(session);
     decision=recordProgress(progress,session,progressOptions);
     if(generation===finishGeneration){$('bpm').value=decision.nextBPM;saveSettings();}
     await persist();renderHistory();renderProgressStatus();
   }
   if(generation!==finishGeneration)return;
-  notice(completed.demo ? 'Simulation complete. Connect your devices to capture your playing.' : completed.late ? 'Completed with a scheduling interruption. This run cannot qualify as clean; keep the window visible and close demanding apps.' : metrics.clean ? 'Clean run. Good timing and accuracy.' : 'Run saved. Review missed notes and timing, then try again.');
+  notice(completed.external?'Experimental companion complete. Alignment remains unverified; history and progress were not saved.':completed.demo ? 'Simulation complete. Connect your devices to capture your playing.' : completed.late ? 'Completed with a scheduling interruption. This run cannot qualify as clean; keep the window visible and close demanding apps.' : metrics.clean ? 'Clean run. Good timing and accuracy.' : 'Run saved. Review missed notes and timing, then try again.');
   if(!completed.demo&&decision.message)notice(decision.message);
-  if ($('auto').checked && !completed.demo && !document.hidden && !decision.found) {
+  if ($('auto').checked && !completed.demo && !completed.external && !document.hidden && !decision.found) {
     const delay=Math.min(Math.max(Number($('autoDelay').value)||7,1),30);
     notice(`${decision.message??'Run saved.'} Next count-in starts in ${delay} seconds. Cancel pauses automatic repeats.`);
     $('stop').disabled = false;
@@ -540,10 +565,10 @@ function showResult(s) {
   const m = s.metrics;
   if(m.accents==null)m.accents=evaluateDynamics('accent',s.pattern.notes,s.evidence,m.results??[]);
   if(m.ghosts==null)m.ghosts=evaluateDynamics('ghost',s.pattern.notes,s.evidence,m.results??[]);
-  text('resultTitle',`${s.demo ? 'Simulated · ':''}${m.clean ? 'Clean run':'Practice results'} · ${s.bpm} BPM`);
+  text('resultTitle',`${s.experimental?'Experimental · ':s.demo ? 'Simulated · ':''}${m.clean ? 'Clean run':'Practice results'} · ${s.bpm} BPM`);
   loadSessionTake(s).catch(error=>text('takeInfo',`Could not load this take: ${error.message}`));
   $('sessionNotes').value=s.notes??'';$('sessionTags').value=(s.tags??[]).join(', ');
-  for(const id of ['saveSessionNotes','rescore','deleteSession'])$(id).disabled=!!s.demo;
+  for(const id of ['saveSessionNotes','rescore','deleteSession'])$(id).disabled=!!s.demo||!!s.experimental;
   text('sessionContext',`${s.source==='mac'?'Migrated Mac session':'Windows session'} · scoring version ${m.scoringVersion??1} · MIDI ${s.devices?.midi??'none'} · mic ${s.devices?.microphone??'none'} · output ${s.devices?.output??'default'}${s.rescoredAt?` · rescored ${new Date(s.rescoredAt).toLocaleString()}`:''}`);
   const coaching=summarizePractice(s.pattern,m);text('coachingOverview',coaching.overview);text('coachingNext',coaching.nextStep);
   $('metrics').replaceChildren();
@@ -579,8 +604,8 @@ function renderLedger(){
 async function loadSessionTake(session){
   $('takePlayer').pause();$('takePlayer').hidden=true;$('takePlayer').removeAttribute('src');displayedTake=null;
   if(takeURL){URL.revokeObjectURL(takeURL);takeURL=null;}
-  $('downloadTake').disabled=true;$('deleteTake').disabled=true;$('takeFile').disabled=!!session.demo;
-  if(!db||session.demo){text('takeInfo','No recording attached to this simulated run.');return;}
+  $('downloadTake').disabled=true;$('deleteTake').disabled=true;$('takeFile').disabled=!!session.demo||!!session.experimental;
+  if(!db||session.demo||session.experimental){text('takeInfo','No recording attached to this simulated or experimental run.');return;}
   const take=await getTake(db,session.id);if(currentResult?.id!==session.id)return;
   if(!take){text('takeInfo',session.audioError?`Recording unavailable: ${session.audioError}`:session.source==='mac'?'Import the transferred Mac-recordings folder to attach this session’s original take.':'No recording attached. Enable Save played audio before the next run, or attach a local take.');return;}
   displayedTake=take;takeURL=URL.createObjectURL(take.blob);$('takePlayer').src=takeURL;$('takePlayer').hidden=false;
@@ -670,7 +695,8 @@ function draw() {
   }
   c.strokeStyle='#e9eaf3'; c.lineWidth=2; c.beginPath(); c.moveTo(playhead,25); c.lineTo(playhead,height-12); c.stroke(); c.lineWidth=1;
   }
-  if (run) {
+  if(run?.waiting){text('phase','WAITING');text('position','Wait for Ready, then press Play in Songsterr.');}
+  else if (run) {
     const relative = audibleTime()-run.start;
     if (relative < 0 && run.kind !== 'click') { const remaining = Math.min(8,Math.ceil(-relative/run.beatMs)); text('phase','COUNT IN'); text('position',`Count-in · ${remaining} clicks to go`); }
     else { const beat=pattern.referenceBeats?.filter(b=>b.time<=relative).at(-1);text('phase',run.kind==='alignment'?'ALIGNING':run.kind==='click'?'CLICK':'PLAYING');text('position',run.kind==='alignment'?`Click ${Math.min(12,Math.floor(relative/run.beatMs)+1)} of 12`:run.kind==='click'?`Beat ${Math.floor(Math.max(0,relative)/run.beatMs)%4+1}`:`Measure ${beat?.measure??1} · beat ${beat?.beat??1}`); }
@@ -715,6 +741,8 @@ $('saveMap').onclick = withError(() => { if (!$('midi').value) throw new Error('
 $('start').onclick = withError(() => begin()); $('again').onclick = withError(() => begin());
 $('demo').onclick = withError(() => begin('practice',true));
 $('click').onclick = withError(() => begin('click'));
+$('saveAlignment').onclick=withError(()=>{const profile=pendingAlignment;if(!profile)throw new Error('Complete timing alignment first.');if(profile.key!==inputKey(profile.source))throw new Error('The input or output changed. Retry alignment for this setup.');settings.alignmentProfiles??={};settings.alignmentProfiles[profile.key]=profile;saveCorrection(profile.source,profile.compensationMilliseconds);pendingAlignment=null;$('alignmentReview').hidden=true;notice('Timing correction saved and applied to new scores. MIDI alignment applies to every e-kit drum.');});
+$('discardAlignment').onclick=()=>cancel('Alignment discarded. The previous saved correction is still active.');
 $('alignMidi').onclick = withError(() => begin('alignment',false,'midi'));
 $('alignMic').onclick = withError(() => begin('alignment',false,'microphone'));
 $('stop').onclick = () => cancel('Practice and automatic repeats paused. No interrupted attempt was saved.');
@@ -753,12 +781,27 @@ $('historySearch').oninput=()=>{historyLimit=50;renderHistory();};$('historyFilt
 $('saveSessionNotes').onclick=withError(async()=>{const index=sessions.findIndex(s=>s.id===currentResult?.id);if(index<0)throw new Error('Select a saved session.');sessions[index].notes=$('sessionNotes').value.trim();sessions[index].tags=[...new Set($('sessionTags').value.split(',').map(t=>t.trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:'base'}));await persist();renderHistory();notice('Session notes and tags saved.');});
 $('rescore').onclick=withError(async()=>{cancel();const index=sessions.findIndex(s=>s.id===currentResult?.id);if(index<0)throw new Error('Select a saved session.');sessions[index]=rescoreSession(sessions[index]);await persist();showResult(sessions[index]);renderHistory();notice('Archived evidence rescored with the native-compatible rules and saved source corrections. Progression was not advanced.');});
 $('deleteSession').onclick=withError(async()=>{const id=currentResult?.id;if(!id||!sessions.some(s=>s.id===id))throw new Error('Select a saved session.');cancel();sessions=sessions.filter(s=>s.id!==id);deletedSessionIDs.push(id);if(db)await removeTake(db,id);currentResult=null;$('result').hidden=true;await persist();renderHistory();notice('Session removed from active history. Original imported Mac backups remain available.');});
+$('syncLost').onclick=()=>{if(run?.external)cancel('Sync lost — this attempt was discarded. Pause Songsterr, return to the selected measure and re-arm.');};
+for(const id of ['externalPlayback','playbackOffset','playbackThreshold'])$(id).onchange=()=>{cancel();updateGuide();saveSettings();};
 for(const id of ['recordAudio','recordInput','recordChannels'])$(id).onchange=()=>{cancel();saveSettings();};
 $('takeFile').onchange=withError(async event=>{const file=event.target.files[0];event.target.value='';if(!file)return;if(!currentResult||currentResult.demo)throw new Error('Select a saved session first.');if(file.size>500*1024*1024)throw new Error('This audio file exceeds 500 MB.');const session=currentResult;await saveTake(db,session.id,file,{filename:file.name,imported:true});await loadSessionTake(session);notice('Take attached to this session.');});
 $('takeFolder').onchange=withError(async event=>{const files=[...event.target.files];event.target.value='';if(!files.length)return;let attached=0;const ids=new Map(sessions.map(s=>[s.id.toLowerCase(),s.id]));for(const file of files){if(!/\.(m4a|wav|webm|mp3|ogg|flac)$/i.test(file.name))continue;const id=file.name.replace(/\.[^.]+$/,'').toLowerCase();if(!ids.has(id)||file.size>500*1024*1024)continue;await saveTake(db,ids.get(id),file,{filename:file.name,imported:true});attached++;}if(currentResult)await loadSessionTake(currentResult);notice(`Attached ${attached} recordings to their saved session IDs. Other files were kept in your original folder.`);});
 $('downloadTake').onclick=()=>{if(displayedTake)downloadBlob(displayedTake.blob,displayedTake.filename??`${currentResult.id}.wav`);};
 $('deleteTake').onclick=withError(async()=>{if(!currentResult||!displayedTake)return;await removeTake(db,currentResult.id);await loadSessionTake(currentResult);notice('The browser copy of this take was deleted. Imported originals remain in your transferred folder.');});
-$('export').onclick = () => download({format:'DrumTrainerWindows',version:1,exportedAt:new Date().toISOString(),exercises:library,sessions:sessions.map(compactSession),nativeArchives,songs,progress,deletedSessionIDs,deletedSongIDs,settings},`DrumTrainer-Windows-${new Date().toISOString().slice(0,10)}.json`);
+function backupSnapshot(){return {format:'DrumTrainerWindows',version:1,exportedAt:new Date().toISOString(),exercises:library,sessions:sessions.map(compactSession),nativeArchives,songs,progress,deletedSessionIDs,deletedSongIDs,settings};}
+$('export').onclick = () => download(backupSnapshot(),`DrumTrainer-Windows-${new Date().toISOString().slice(0,10)}.json`);
+$('exportBundle').onclick=withError(async()=>{
+  if(!db)throw new Error('Browser storage is unavailable. Export the JSON backup and download available takes separately.');
+  $('exportBundle').disabled=true;
+  try{
+    const snapshot=backupSnapshot(),ids=new Set(snapshot.sessions.map(s=>s.id.toLowerCase())),entries=[{name:'Practice-backup.json',blob:new Blob([JSON.stringify(snapshot)],{type:'application/json'})}];
+    const takes=(await allTakes(db)).filter(t=>ids.has(t.id)),manifest=[];
+    for(const take of takes){const extension=take.filename?.match(/\.(m4a|wav|webm|mp3|ogg|flac)$/i)?.[1]??(take.blob.type==='audio/wav'?'wav':'m4a'),filename=`Recordings/${take.id}.${extension}`;entries.push({name:filename,blob:take.blob});const {blob,...metadata}=take;manifest.push({...metadata,filename});}
+    entries.push({name:'Recording-manifest.json',blob:new Blob([JSON.stringify(manifest)],{type:'application/json'})});
+    entries.push({name:'Restore-instructions.txt',blob:new Blob(['Extract All on Windows. Import Practice-backup.json in DrumTrainer, then choose Import recordings folder and select Recordings. Your recordings attach by session ID. Keep this ZIP outside the browser before clearing browser data.'],{type:'text/plain'})});
+    const zip=await portableZIP(entries,{onProgress:p=>notice(`Preparing portable backup: ${p.completed}/${p.total} files checked.`)});downloadBlob(zip,`DrumTrainer-complete-backup-${snapshot.exportedAt.slice(0,10)}.zip`);notice(`Portable backup prepared with ${snapshot.sessions.length} sessions and ${takes.length} attached recordings. Extract the ZIP to restore its JSON and Recordings folder.`);
+  }finally{$('exportBundle').disabled=!!run||!!starting||finishing;}
+});
 $('restoreNative').onclick = () => nativeArchives.forEach((a,i) => download(a,`DrumTrainer-original-Mac-backup-${i+1}.json`));
 $('import').onchange = withError(async event => {
   const file = event.target.files[0]; event.target.value = ''; if (!file) return;
@@ -779,7 +822,7 @@ $('import').onchange = withError(async event => {
   if(imported.progress){progress.tempoProgressions=mergeByID(progress.tempoProgressions,imported.progress.tempoProgressions??[]);progress.ceilingRecords=mergeByID(progress.ceilingRecords,imported.progress.ceilingRecords??[]);progress.activeCeilingRun??=imported.progress.activeCeilingRun??null;}
   await persist();refreshExercises();refreshSongs();renderHistory();notice(`Imported ${imported.exercises.length} exercises, ${imported.sessions.length+converted.sessions.length} detailed sessions and ${converted.songs.length+(imported.songs?.length??0)} songs. Original Mac archives are preserved.`);
 });
-document.addEventListener('visibilitychange',() => { if (document.hidden && (run || autoTimer)) cancel('Practice paused because this window was hidden. Keep it visible while playing.'); });
+document.addEventListener('visibilitychange',() => { if (document.hidden && !run?.external && (run || autoTimer)) cancel('Practice paused because this window was hidden. Keep it visible while playing.'); });
 window.addEventListener('pagehide',() => { cancel(); stopMicrophone(); audio?.close(); });
 navigator.mediaDevices?.addEventListener('devicechange',withError(refreshAudioDevices));
 window.addEventListener('keydown',event => { if (event.code === 'Space' && !['INPUT','SELECT','TEXTAREA','BUTTON'].includes(document.activeElement.tagName)) { event.preventDefault(); run || autoTimer ? cancel('Paused.'):withError(() => begin())(); } });

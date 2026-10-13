@@ -5,7 +5,7 @@
 3. Connect the drum module, Blue Snowball, and your headphone output. Click **Connect MIDI**, select your kit, and grant MIDI permission. Strike each pad; use **Pad mapping** to correct its voice.
 4. Click **Enable microphone**, grant microphone permission, select the Snowball, and click **Sample noise** while the room is quiet. Test kicks in the live log. Adjust the threshold and lockout if necessary. Use **Calibrate kicks**: after the quiet-room sample, play 10 isolated kicks and 10 kicks while adding other pads, then **Save calibration**. The learned spectral/decay filter and MIDI crosstalk guard now use the native algorithms; test them with your hardware before relying on scores.
 5. Select the Focusrite/headphones under **Click output**. If output selection is unavailable, choose it in Windows sound settings. Use headphones to keep the click out of the kick microphone.
-6. Run **Align MIDI** and **Align mic** for each input/output setup. After eight count-in clicks, play one hit per click for 12 clicks. Alignment includes personal playing bias; it is not a laboratory latency measurement.
+6. Run **Align MIDI** and **Align mic** for each input/output setup. At the fixed 60 BPM, listen to eight count-in clicks, then play one hit per click for 12 clicks. Review the compensation and spread, then choose **Save & Apply**. Alignment includes personal playing bias; it is not a laboratory latency measurement.
 7. Choose an exercise, tempo, and repeat count, then **Start exercise**. Begin after the eight count-in clicks. Keep the app visible; hiding it cancels the attempt to prevent unreliable timing. Space starts/pauses practice when you are not editing a control.
 
 No Xcode, Python, Node.js, paid account, installation, or administrator access is required. Windows PowerShell 5.1 and a current Chromium-based Microsoft Edge or Google Chrome are required. This uses browser MIDI and audio APIs on a server bound only to this computer at `http://localhost:8765`. It has no external libraries, network assets, analytics, or uploads. The included server serves only allowlisted app files; personal backup files are imported directly from your computer.
@@ -19,7 +19,7 @@ This transfer also includes **Mac-source-backup.zip**, a snapshot of the native 
 - Saved drum measures and sequences become playable exercises, including authored accents and ghosts. Dynamics need MIDI velocity evidence; microphone hits do not supply velocity.
 - Mac drum sessions with archived evidence have complete results, raw evidence, saved device/correction context, editable notes/tags, and rescoring. Summary-only legacy entries remain available when no evidence record exists. Original songs, scores, raw event evidence, profiles, and other native archive fields are preserved unchanged inside the imported archive. **Download original Mac backups** retrieves them. Imported drum songs can be practiced through track mapping, section loops, tempo scaling and their saved tempo/meter maps.
 - Mac recorded audio is stored separately from the JSON backup. This transfer package includes the available takes in **Mac-recordings**. Keep that folder. If making a new transfer yourself, copy `~/Library/Application Support/DrumTrainer/Practice Audio` as well. Choose **Import recordings folder** and select **Mac-recordings**. Takes attach by session ID and can be replayed, scrubbed, downloaded or deleted from session details. Original files remain in your transferred folder.
-- This edition's **Export backup** includes Windows exercises and sessions plus original imported Mac archives. Its format is different from the native Mac app's format. Do not import the Windows wrapper into the Mac app; download the original Mac backup instead.
+- This edition's **Export JSON** includes Windows exercises and sessions plus original imported Mac archives. Its format is different from the native Mac app's format. Do not import the Windows wrapper into the Mac app; download the original Mac backup instead.
 
 Practice data is stored in this browser's local database. Always use the same browser and address. Export after important sessions, before changing computers, or before clearing browser data. Moving the extracted folder does not move browser history. MIDI mappings and device timing corrections are kept in that browser's settings and should be configured again on a new computer. Each source's correction belongs to the selected input/output pairing; when changing the Windows default device, run alignment again.
 
@@ -33,11 +33,17 @@ The matching, metrics, accent/ghost rules, stable timing-bias adjustment, and cl
 
 Enable **Record completed practice sessions**, select a recording input independently of the kick microphone, and select Input 1, Input 2 or Loopback 3–4. Count-in is excluded. Completed audio windows are saved as PCM WAV; interrupted captures are discarded. Mac takes retain their original `.m4a` format. The browser must expose the requested input channels; a two-channel device cannot provide channels 3–4 through this path. Separate loopback devices can be selected as Input 1. Hardware channel routing still needs verification on Windows.
 
-**Export backup** contains evidence and settings but no audio files. Download important takes separately before clearing browser data. The synthesized click/kick sample formulas match the native generator in 72 Swift reference cases. The Windows limiter is a separate peak limiter with a 50 ms release; it enforces the selected ceiling but is not Apple’s Audio Unit DSP.
+**Export JSON** contains evidence and settings. **Backup with recordings** creates a complete portable ZIP with the JSON, attached takes and restore instructions. Extract All, import `Practice-backup.json`, then import its `Recordings` folder. Keep the ZIP outside the browser before clearing browser data. The bundle has a 2 GB limit; larger libraries can download takes separately. The synthesized click/kick sample formulas match the native generator in 72 Swift reference cases. The Windows limiter is a separate peak limiter with a 50 ms release; it enforces the selected ceiling but is not Apple’s Audio Unit DSP.
 
-## Not yet ported
+## Songsterr companion
 
-Songsterr companion; electric piano/guitar workflows. Custom measures and sequences now support authoring, update/copy/delete. Imported MIDI songs and native session evidence are migrated and usable. Full feature parity remains pending the remaining workflows and Windows 10 physical-device validation.
+For an imported MIDI song, expand **Songsterr companion — experimental**, enable the browser-audio start option, and set one repeat. Match the selected section and tempo in Songsterr and turn its looping/count-in off. **Arm Songsterr companion** opens the browser sharing picker. Select the Songsterr tab and enable **Share tab audio**. Wait for Ready, then press Play there. Detection follows the Mac rule: 300 ms quiet followed by 20 ms sustained sound, anchored to the first loud window. Use the start offset for residual capture delay or intro offsets; hit timing corrections still apply independently.
+
+This is start detection only. It does not follow pause/seek/loop/drift or recognize a particular song. Experimental runs are not saved to history, progression or audio. No shared audio/video is saved or uploaded. Songsterr audio remains outside the app limiter. Tab capture and physical alignment still need Windows verification.
+
+## Remaining scope
+
+Electric piano/guitar workflows are outside this Windows drum port. Custom measures and sequences now support authoring, update/copy/delete. Imported MIDI songs and native session evidence are migrated and usable. Full feature parity remains pending the remaining workflows and Windows 10 physical-device validation.
 
 ## Troubleshooting
 
@@ -56,3 +62,5 @@ Reference cases are generated by compiling the repository’s actual Swift drum 
 Audio verification additionally compares 72 generated native click/kick waveforms and exercises recording window/channel selection, PCM WAV headers, limiter bounds, and actual worklet message processing. Regenerate sound reference cases with `python3 Windows/validation/generate-sound-fixtures.py` on the Mac.
 
 Staff note positions compile against the actual `PracticeScoreTimeline` implementation. Timing entries and coaching compare with 67 generated Swift sessions, including synchronization priority, stable latency bias, and accent/ghost failure advice.
+
+Playback detection compares all intermediate ready/trigger states against 13 actual Swift onset sequences. Hit timing alignment compares against eight actual Swift collector measurements (nearest unused hit within 400 ms, source/voice isolation, boundary inclusion, median and MAD). ZIP interoperability was also checked with Python’s independent ZIP reader, including a multi-chunk audio payload.
