@@ -3,7 +3,13 @@
 set -eu
 cd "$(dirname "$0")/../.."
 binary=$(mktemp /private/tmp/DrumTrainer-native-fixtures.XXXXXX)
-trap 'rm -f "$binary"' EXIT
+timeline=$(mktemp /private/tmp/DrumTrainer-native-timeline.XXXXXX.swift)
+scoretimeline=$(mktemp /private/tmp/DrumTrainer-native-score-timeline.XXXXXX.swift)
+trap 'rm -f "$binary" "$timeline" "$scoretimeline"' EXIT
+printf 'import Foundation\n' > "$timeline"
+sed -n '/^struct PracticeTimingTimelineEntry:/,/^struct SavedCustomExercise:/{ /^struct SavedCustomExercise:/!p; }' DrumTrainer/Domain/Scoring/PracticeSessionRecording.swift >> "$timeline"
+printf 'import Foundation\n' > "$scoretimeline"
+sed -n '/^enum PracticeScoreTimeline/,$p' DrumTrainer/Features/Practice/PracticeScoreView.swift >> "$scoretimeline"
 swiftc -module-cache-path /private/tmp/DrumTrainer-native-fixture-modules \
   DrumTrainer/Domain/Models/DrumVoice.swift \
   DrumTrainer/Domain/Models/EventSource.swift \
@@ -15,6 +21,7 @@ swiftc -module-cache-path /private/tmp/DrumTrainer-native-fixture-modules \
   DrumTrainer/Domain/Scoring/ScoringMetrics.swift \
   DrumTrainer/Services/Timing/HostTimeConverter.swift \
   DrumTrainer/Services/Audio/KickSoundClassifier.swift \
+  "$timeline" "$scoretimeline" \
   Windows/validation/NativeFixtureSupport.swift \
   Windows/validation/GenerateNativeFixtures.swift -o "$binary"
 "$binary" Windows/validation/native-fixtures.json

@@ -4,6 +4,10 @@ import {parseMIDI,validateSong,songMeasures,songBPM,firstSongMeasure,makeSongPat
 import {convertNativeArchives,rescoreSession,compactSession,hydrateSession} from './legacy-data.mjs';
 import {emptyProgress,exerciseIdentity,prepareCeiling,recordProgress,mergeNativeProgress} from './practice-progress.mjs';
 import {clickSounds,kickSounds,clickSamples,kickSamples,kickDynamics} from './sound-synthesis.mjs';
+import {timingTimeline,filterTimeline,renderTimingChart} from './timing-timeline.mjs';
+import {evaluateDynamics} from './native-scoring.mjs';
+import {drawNotation} from './notation.mjs';
+import {summarizePractice} from './coaching.mjs';
 import {SessionRecorder,getTake,saveTake,deleteTake as removeTake} from './recordings.mjs';
 const $ = id => document.getElementById(id);
 const text = (id,value) => { $(id).textContent = value; };
@@ -16,6 +20,7 @@ try { settings = JSON.parse(localStorage.getItem(key) ?? '{}'); } catch { /* Def
 let library = [], sessions = [], nativeArchives = [], db = null;
 let songs = [], progress = emptyProgress(), deletedSessionIDs = [], deletedSongIDs = [], historyLimit = 50;
 let audio, midiAccess, stream, micNode, micSource, micMute, clickBus, scheduler, animation, autoTimer;
+let ledgerLimit=200;
 let run = null, count = 0, peak = 0, noisePeaks = null, currentResult = null;
 let calibration = null, pendingProfile = null, soundRejected = 0, crosstalkRejected = 0, micEpoch = 0;
 let audioInitialization = null, outputProcessor = null, nextKickVoice = 0, lastMonitoredKick = -Infinity;
@@ -66,7 +71,7 @@ try {
 
 for(const [id,label]of Object.entries(clickSounds))$('clickSound').append(new Option(label,id));
 for(const [id,label]of Object.entries(kickSounds))$('kickSound').append(new Option(label,id));
-const settingControls = ['bpm','repeats','volume','kickSource','gradeKicks','threshold','lockout','auto','advance','soundFilter','guard','match','autoDelay','cleanRuns','advanceStep','ceiling','ceilingStep','practiceMode','sectionStart','sectionEnd','tolerance','accentFloorEnabled','accentFloor','accentContrast','ghostCeilingEnabled','ghostCeiling','ghostContrast','clickSound','clickGain','limiter','limiterCeiling','kickMonitor','kickMonitorSource','kickSound','kickGain','kickVelocity','kickMonitorLockout','recordAudio','recordInput','recordChannels'];
+const settingControls = ['bpm','repeats','volume','kickSource','gradeKicks','threshold','lockout','auto','advance','soundFilter','guard','match','autoDelay','cleanRuns','advanceStep','ceiling','ceilingStep','practiceMode','sectionStart','sectionEnd','tolerance','accentFloorEnabled','accentFloor','accentContrast','ghostCeilingEnabled','ghostCeiling','ghostContrast','clickSound','clickGain','limiter','limiterCeiling','kickMonitor','kickMonitorSource','kickSound','kickGain','kickVelocity','kickMonitorLockout','recordAudio','recordInput','recordChannels','scoreView'];
 for (const id of settingControls) {
   if (settings[id] != null) {
     if ($(id).type === 'checkbox') $(id).checked = settings[id] === true;
@@ -75,6 +80,7 @@ for (const id of settingControls) {
 }
 function saveSettings() {
   for (const id of settingControls) settings[id] = $(id).type === 'checkbox' ? $(id).checked : $(id).value;
+  if($('practiceMode').value==='song'&&selectedSong()&&Number($('sectionStart').value)>0){settings.songSections??={};settings.songSections[selectedSong().id]={start:Number($('sectionStart').value),end:Number($('sectionEnd').value),bpm:Number($('bpm').value)};}
   if (!calibration) { settings.detectors ??= {}; settings.detectors[$('microphone').value] = {threshold:Number($('threshold').value),lockout:Number($('lockout').value)}; }
   try { localStorage.setItem(key,JSON.stringify(settings)); } catch { notice('Settings could not be saved. Export practice data before closing.'); }
 }
@@ -531,11 +537,15 @@ async function finish() {
 }
 function showResult(s) {
   currentResult = s; $('result').hidden = false;
-  const m = s.metrics; text('resultTitle',`${s.demo ? 'Simulated · ':''}${m.clean ? 'Clean run':'Practice results'} · ${s.bpm} BPM`);
+  const m = s.metrics;
+  if(m.accents==null)m.accents=evaluateDynamics('accent',s.pattern.notes,s.evidence,m.results??[]);
+  if(m.ghosts==null)m.ghosts=evaluateDynamics('ghost',s.pattern.notes,s.evidence,m.results??[]);
+  text('resultTitle',`${s.demo ? 'Simulated · ':''}${m.clean ? 'Clean run':'Practice results'} · ${s.bpm} BPM`);
   loadSessionTake(s).catch(error=>text('takeInfo',`Could not load this take: ${error.message}`));
   $('sessionNotes').value=s.notes??'';$('sessionTags').value=(s.tags??[]).join(', ');
   for(const id of ['saveSessionNotes','rescore','deleteSession'])$(id).disabled=!!s.demo;
   text('sessionContext',`${s.source==='mac'?'Migrated Mac session':'Windows session'} · scoring version ${m.scoringVersion??1} · MIDI ${s.devices?.midi??'none'} · mic ${s.devices?.microphone??'none'} · output ${s.devices?.output??'default'}${s.rescoredAt?` · rescored ${new Date(s.rescoredAt).toLocaleString()}`:''}`);
+  const coaching=summarizePractice(s.pattern,m);text('coachingOverview',coaching.overview);text('coachingNext',coaching.nextStep);
   $('metrics').replaceChildren();
   for (const [value,label] of [[percent(m.recall),'Notes correct'],[ms(m.error),'Median timing error'],[ms(m.bias),'Timing bias · − early / + late'],[`${m.missed} / ${m.extra}`,'Missed / extra']]) {
     const card = document.createElement('div'); card.className = 'metric';
@@ -551,13 +561,21 @@ function showResult(s) {
     for (const cell of [voices[v.voice] ?? v.voice,`${v.correct} / ${v.expected}`,ms(v.error)]) { const td = document.createElement('td'); td.textContent = cell; tr.append(td); }
     table.append(tr);
   }
-  $('voiceMetrics').replaceChildren(summary,table); $('ledger').replaceChildren();
-  for (const r of (m.results ?? []).slice(0,2000)) {
-    const tr = document.createElement('tr'); tr.className = r.status === 'correct' && (!r.dynamics || r.dynamics === 'achieved') ? 'good':'bad';
-    for (const value of [r.expected?.measure ?? '—',voices[r.expected?.voice] ?? '—',voices[r.actual?.voice] ?? '—',`${r.status}${r.dynamics ? ` · ${r.dynamics}`:''}`,r.offset == null ? '—':`${r.offset > 0 ? '+':''}${ms(r.offset)}`]) { const td = document.createElement('td'); td.textContent = value; tr.append(td); }
-    $('ledger').append(tr);
+  $('voiceMetrics').replaceChildren(summary,table);ledgerLimit=200;renderLedger();
+}
+function renderLedger(){
+  if(!currentResult)return;
+  const timeline=timingTimeline(currentResult),entries=filterTimeline(timeline,{problems:$('ledgerFilter').value==='problems',voice:$('ledgerVoice').value});
+  renderTimingChart($('timingChart'),currentResult,entries,timeline);$('ledger').replaceChildren();
+  text('ledgerCount',`Showing ${Math.min(ledgerLimit,entries.length)} of ${entries.length} filtered events · ${timeline.entries.length} total. All events remain in the backup.`);$('ledgerMore').disabled=ledgerLimit>=entries.length;
+  for(const r of entries.slice(0,ledgerLimit)){
+    const tr=document.createElement('tr');tr.className=r.status==='correct'?'good':'bad';
+    const expected=r.expected,actual=r.actual,position=expected?`${expected.measure}.${expected.beat}.${expected.subdivision+1}`:'—';
+    for(const value of [position,voices[expected?.voice]??'—',voices[actual?.voice]??'—',`${r.status}${r.dynamics?` · ${r.dynamics}`:''}`,r.offset==null?'—':`${r.offset>0?'+':''}${ms(r.offset)}`,r.expectedTime==null?'—':`${r.expectedTime.toFixed(3)} ms`,r.actualTime==null?'—':`${r.actualTime.toFixed(3)} ms`,actual?.source??'—']){const td=document.createElement('td');td.textContent=value;tr.append(td);}
+    const td=document.createElement('td'),button=document.createElement('button');button.className='secondary';button.textContent='Inspect';button.onclick=()=>{text('rawEvidence',JSON.stringify({expected,played:actual,decision:{...r,expected:undefined,actual:undefined}},null,2));$('rawEvidencePanel').open=true;};td.append(button);tr.append(td);$('ledger').append(tr);
   }
 }
+
 async function loadSessionTake(session){
   $('takePlayer').pause();$('takePlayer').hidden=true;$('takePlayer').removeAttribute('src');displayedTake=null;
   if(takeURL){URL.revokeObjectURL(takeURL);takeURL=null;}
@@ -629,6 +647,10 @@ function draw() {
   let pattern = run?.pattern ?? currentResult?.pattern;
   if (!pattern) { try { pattern = previewPattern(); } catch { animation = requestAnimationFrame(draw); return; } }
   const t = run?.kind === 'practice' ? Math.max(0,audibleTime()-run.start):0;
+  canvas.classList.toggle('staff',$('scoreView').value==='staff');
+  $('scoreMeasure').max=pattern.measures;
+  if($('scoreView').value==='staff'){drawNotation(c,width,pattern,{time:run?.kind==='practice'?t:null,metrics:currentResult?.metrics,measure:Number($('scoreMeasure').value)||1});}
+  else{
   const laneVoices = [...new Set(pattern.notes.map(n => n.voice))], rowH = Math.min(45,(height-45)/Math.max(laneVoices.length,1)), left = 105;
   const pixelsPerBeat = Math.max(35,(width-left-20)/8), pixelsPerMs = pixelsPerBeat/pattern.beatMs, playhead = left+30;
   c.font = '11px Segoe UI, system-ui'; c.textBaseline = 'middle';
@@ -647,6 +669,7 @@ function draw() {
     if (n.accent) { c.fillStyle='#f3d5a3'; c.fillText('>',x-3,y-13); }
   }
   c.strokeStyle='#e9eaf3'; c.lineWidth=2; c.beginPath(); c.moveTo(playhead,25); c.lineTo(playhead,height-12); c.stroke(); c.lineWidth=1;
+  }
   if (run) {
     const relative = audibleTime()-run.start;
     if (relative < 0 && run.kind !== 'click') { const remaining = Math.min(8,Math.ceil(-relative/run.beatMs)); text('phase','COUNT IN'); text('position',`Count-in · ${remaining} clicks to go`); }
@@ -655,6 +678,11 @@ function draw() {
   animation = requestAnimationFrame(draw);
 }
 
+optionVoices($('ledgerVoice'));$('ledgerVoice').prepend(new Option('All voices','all'));$('ledgerVoice').value='all';
+for(const id of ['ledgerFilter','ledgerVoice'])$(id).onchange=()=>{ledgerLimit=200;renderLedger();};
+$('ledgerMore').onclick=()=>{ledgerLimit+=200;renderLedger();};
+$('scoreView').onchange=()=>saveSettings();
+$('scoreMeasure').onchange=()=>{$('scoreMeasure').value=Math.min(Math.max(Number($('scoreMeasure').value)||1,1),Number($('scoreMeasure').max)||1);};
 $('connect').onclick = withError(connectMidi);
 $('midi').onchange = () => { cancel('MIDI input changed. Select Start when ready.'); wireMidi(); settings.midi = $('midi').value; loadCorrections(); saveSettings(); };
 $('listen').onclick = withError(async () => { cancel(); if (stream) { stopMicrophone(); notice('Microphone disabled.'); } else await startMicrophone(); });
@@ -755,4 +783,4 @@ document.addEventListener('visibilitychange',() => { if (document.hidden && (run
 window.addEventListener('pagehide',() => { cancel(); stopMicrophone(); audio?.close(); });
 navigator.mediaDevices?.addEventListener('devicechange',withError(refreshAudioDevices));
 window.addEventListener('keydown',event => { if (event.code === 'Space' && !['INPUT','SELECT','TEXTAREA','BUTTON'].includes(document.activeElement.tagName)) { event.preventDefault(); run || autoTimer ? cancel('Paused.'):withError(() => begin())(); } });
-await withError(refreshAudioDevices)(); loadMicrophoneProfile();refreshSongs();$('customName').value=draft.name;$('grid').value=draft.subdivision;renderEditor();renderSequence();renderHistory();animation=requestAnimationFrame(draw);
+await withError(refreshAudioDevices)(); loadMicrophoneProfile();refreshSongs();$('customName').value=draft.name;$('grid').value=draft.subdivision;renderEditor();renderSequence();renderHistory();animation=requestAnimationFrame(draw);document.querySelector('main').inert=false;

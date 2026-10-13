@@ -1,5 +1,5 @@
 // Convert native drum evidence for the Windows UI without discarding the original archive.
-import {normalizeExpected,normalizeActual,nativeScore,stableTimingBias} from './native-scoring.mjs';
+import {normalizeExpected,normalizeActual,nativeScore,stableTimingBias,evaluateDynamics} from './native-scoring.mjs';
 import {validateSong} from './midi.mjs';
 const isoDate=value=>typeof value==='number'?new Date((value+978307200)*1000).toISOString():new Date(value).toISOString();
 const finite=(n,min,max)=>typeof n==='number'&&Number.isFinite(n)&&n>=min&&n<=max;
@@ -33,7 +33,7 @@ function nativeRecord(record){
   const native=record.metrics,perVoice=(native.perVoice??[]).map(v=>({...v,expected:v.totalExpected,played:v.totalPlayed,correct:v.correctCount,error:v.medianAbsoluteErrorMilliseconds??null}));
   const options={gradeKicks:record.scoringConfiguration?.gradeKicks??true,dropped:summary.droppedEventCount??0,corrections:{midi:record.deviceContext?.midiTimingCompensationMilliseconds??0,microphone:record.deviceContext?.microphoneTimingCompensationMilliseconds??0}};
   const stable=stableTimingBias(results),clean=!(options.dropped)&&native.totalExpected>0&&native.recall>=.95&&(summary.latencyAdjustedMedianErrorMilliseconds??native.medianAbsoluteErrorMilliseconds??Infinity)<=25&&(summary.accentMetrics?.accuracy??1)>=.9&&(summary.ghostMetrics?.accuracy??1)>=.9;
-  const metrics={...native,perVoice,results,expected:native.totalExpected,played:native.totalPlayed,correct:native.correctCount,missed:native.missedCount,extra:native.extraCount,wrong:native.wrongVoiceCount,ambiguous:native.ambiguousCount,error:native.medianAbsoluteErrorMilliseconds??null,bias:native.meanSignedOffsetMilliseconds??null,consistency:native.timingStandardDeviationMilliseconds??null,spread:native.limbSynchronization?.medianSpreadMilliseconds??null,stableTiming:stable,clean,scoringVersion:summary.scoringVersion,archived:true};
+  const metrics={...native,perVoice,results,expected:native.totalExpected,played:native.totalPlayed,correct:native.correctCount,missed:native.missedCount,extra:native.extraCount,wrong:native.wrongVoiceCount,ambiguous:native.ambiguousCount,error:native.medianAbsoluteErrorMilliseconds??null,bias:native.meanSignedOffsetMilliseconds??null,consistency:native.timingStandardDeviationMilliseconds??null,spread:native.limbSynchronization?.medianSpreadMilliseconds??null,stableTiming:stable,accents:evaluateDynamics('accent',pattern.notes,evidence,results),ghosts:evaluateDynamics('ghost',pattern.notes,evidence,results),clean,scoringVersion:summary.scoringVersion,archived:true};
   return{id:summary.id,name:summary.exerciseName,bpm:summary.bpm,date:isoDate(summary.completedAt),pattern,evidence,metrics,options,notes:record.notes??'',tags:record.tags??[],source:'mac',exerciseKind:summary.exerciseKind,customExerciseID:summary.customExerciseID,importedSongID:summary.importedSongID,deviceContext:record.deviceContext,devices:{midi:record.deviceContext?.midiDeviceName,microphone:record.deviceContext?.audioInputName,output:record.deviceContext?.audioOutputName}};
 }
 export function convertNativeArchives(archives){
@@ -54,7 +54,8 @@ export function compactSession(session){
     if(r.expectedEventID===undefined)return r; // Keep older preview row evidence compatible.
     const {expected,actual,...decision}=r;return decision;
   });
-  return{...session,metrics:{...session.metrics,results}};
+  const dynamic={};if(session.metrics.archived&&session.metrics.accents===undefined){dynamic.accents=evaluateDynamics('accent',session.pattern.notes,session.evidence,results);dynamic.ghosts=evaluateDynamics('ghost',session.pattern.notes,session.evidence,results);}
+  return{...session,metrics:{...session.metrics,...dynamic,results}};
 }
 export function hydrateSession(session){
   const expected=new Map(normalizeExpected(session.pattern.notes).map(e=>[e.id,e])),actual=new Map(normalizeActual(session.evidence).map(a=>[a.id,a]));

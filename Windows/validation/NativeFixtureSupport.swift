@@ -23,3 +23,12 @@ struct PracticeSessionOutcome {
     var ghostEvaluation: GhostEvaluation? { GhostEvaluator().evaluate(expectedEvents: pattern.expectedEvents, actualEvents: actualEvents, matchResults: matchResults) }
     var stableTimingBiasEvaluation: StableTimingBiasEvaluation? { StableTimingBiasEvaluator().evaluate(matchResults) }
 }
+
+extension PracticeCoachingSummary: Encodable {
+    private enum Keys: String, CodingKey { case overview, nextStep }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(overview, forKey: .overview)
+        try c.encode(nextStep, forKey: .nextStep)
+    }
+}

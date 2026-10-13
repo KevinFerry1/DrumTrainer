@@ -12,11 +12,22 @@ struct NativeFixture: Encodable {
     var accents: AccentEvaluation?
     var ghosts: GhostEvaluation?
     var stableTiming: StableTimingBiasEvaluation?
+    var timeline: TimelineFixture
+    var coaching: PracticeCoachingSummary
     var clean: Bool
 }
+struct TimelineFixture: Encodable {
+    let start: Int64; let end: Int64; let entries: [TimelineEntryFixture]
+    init(_ timeline: PracticeTimingTimeline) { start = timeline.startSessionTimeNanoseconds; end = timeline.endSessionTimeNanoseconds; entries = timeline.entries.map(TimelineEntryFixture.init) }
+}
+struct TimelineEntryFixture: Encodable {
+    let id: UUID; let expectedEventID: UUID?; let actualEventID: UUID?; let measure: Int?; let beat: Int?; let subdivision: Int?; let expectedVoice: DrumVoice?; let playedVoice: DrumVoice?; let expectedTimeNanoseconds: Int64?; let actualTimeNanoseconds: Int64?; let classification: MatchClassification; let signedOffsetMilliseconds: Double?; let source: EventSource?; let isProblem: Bool; let anchorTimeNanoseconds: Int64
+    init(_ e: PracticeTimingTimelineEntry) { id = e.id; expectedEventID = e.expectedEventID; actualEventID = e.actualEventID; measure = e.measure; beat = e.beat; subdivision = e.subdivision; expectedVoice = e.expectedVoice; playedVoice = e.playedVoice; expectedTimeNanoseconds = e.expectedTimeNanoseconds; actualTimeNanoseconds = e.actualTimeNanoseconds; classification = e.classification; signedOffsetMilliseconds = e.signedOffsetMilliseconds; source = e.source; isProblem = e.isProblem; anchorTimeNanoseconds = e.anchorTimeNanoseconds }
+}
+struct GeometryFixture: Encodable { let measure: Int; let slot: Double; let slotsPerMeasure: Int; let measureWidth: Double; let position: Double }
 struct GeneratedPattern: Codable { var exercise: String; var pattern: PracticePattern }
 struct FeatureFixture: Codable { var sampleRate: Double; var samples: [Double]; var features: AudioTransientFeatures? }
-struct NativeFixtureArchive: Encodable { var patterns: [GeneratedPattern]; var scoring: [NativeFixture]; var audio: [FeatureFixture]; var signature: KickSoundSignature? }
+struct NativeFixtureArchive: Encodable { var patterns: [GeneratedPattern]; var scoring: [NativeFixture]; var audio: [FeatureFixture]; var signature: KickSoundSignature?; var geometry: [GeometryFixture] }
 
 @main struct GenerateNativeFixtures {
     static func expected(_ time: Double, _ voice: DrumVoice = .kick, allowed: Set<DrumVoice> = [], group: UUID? = nil,
@@ -52,8 +63,10 @@ struct NativeFixtureArchive: Encodable { var patterns: [GeneratedPattern]; var s
         let clean = metrics.totalExpected > 0 && metrics.recall >= 0.95
             && (stable?.adjustedMedianAbsoluteErrorMilliseconds ?? metrics.medianAbsoluteErrorMilliseconds ?? .infinity) <= 25
             && (accents?.metrics.passesCleanThreshold ?? true) && (ghosts?.metrics.passesCleanThreshold ?? true)
+        let pattern = PracticePattern(name: name, bpm: 120, beatsPerMeasure: 4, measures: 4, expectedEvents: e)
+        let coaching = PracticeResultCoach().summarize(PracticeSessionOutcome(pattern: pattern, actualEvents: a, matchResults: matches, metrics: metrics))
         return NativeFixture(name: name, expected: expected, actual: actual, gradeKicks: gradeKicks, corrections: corrections, voiceCorrections: voiceCorrections,
-                             matchResults: matches, metrics: metrics, accents: accents, ghosts: ghosts, stableTiming: stable, clean: clean)
+                             matchResults: matches, metrics: metrics, accents: accents, ghosts: ghosts, stableTiming: stable, timeline: TimelineFixture(PracticeTimingTimeline(pattern: pattern, actualEvents: a, matchResults: matches)), coaching: coaching, clean: clean)
     }
     static func main() throws {
         var patterns: [GeneratedPattern] = []
@@ -88,6 +101,16 @@ struct NativeFixtureArchive: Encodable { var patterns: [GeneratedPattern]; var s
             fixture("authored dynamics relative contrast", [expected(0,.snare),expected(500,.snare,accent:100.0/127,accentContrast:18.0/127),expected(1000,.snare,ghost:50.0/127,ghostContrast:18.0/127)], [actual(0,.snare),actual(500,.snare,velocity:120.0/127),actual(1000,.snare,velocity:25.0/127)]),
             fixture("successive chords with missing tone", [expected(0,.kick,group:group),expected(0,.snare,group:group),expected(500,.kick,group:nextGroup),expected(500,.snare,group:nextGroup)], [actual(0),actual(0,.snare),actual(500,.snare)]),
         ]
+        var unisonExpected: [ExpectedEvent] = [], unisonActual: [PerformanceEvent] = []
+        for i in 0..<8 { let g = UUID(), t = Double(i) * 500
+            unisonExpected += [expected(t, .snare, group: g), expected(t, .closedHiHat, group: g)]
+            unisonActual += [actual(t + 60, .snare), actual(t + 40, .closedHiHat)]
+        }
+        tests.append(fixture("snare hat synchronization precedes stable-bias advice", unisonExpected, unisonActual))
+        tests.append(fixture("coach accents too soft", [expected(0,.snare), expected(500,.snare,accent:100.0/127,accentContrast:18.0/127)], [actual(0,.snare),actual(500,.snare,velocity:90.0/127)]))
+        tests.append(fixture("coach accents need contrast", [expected(0,.snare), expected(500,.snare,accent:80.0/127,accentContrast:18.0/127)], [actual(0,.snare),actual(500,.snare,velocity:90.0/127)]))
+        tests.append(fixture("coach ghosts too loud", [expected(0,.snare), expected(500,.snare,ghost:50.0/127,ghostContrast:18.0/127)], [actual(0,.snare),actual(500,.snare,velocity:60.0/127)]))
+        tests.append(fixture("coach ghosts need contrast", [expected(0,.snare), expected(500,.snare,ghost:100.0/127,ghostContrast:18.0/127)], [actual(0,.snare),actual(500,.snare,velocity:70.0/127)]))
         for bias in [0.0, 29.0, 30.0, 50.0, 80.0, 81.0, -40.0] {
             let expected = (0..<12).map { Self.expected(Double($0)*500) }
             let actual = (0..<12).map { Self.actual(Double($0)*500+bias+Double($0%3-1)*2) }
@@ -117,7 +140,8 @@ struct NativeFixtureArchive: Encodable { var patterns: [GeneratedPattern]; var s
             }
         }
         let archive = NativeFixtureArchive(patterns: patterns, scoring: tests, audio: features,
-            signature: classifier.makeSignature(from: features.compactMap(\.features)))
+            signature: classifier.makeSignature(from: features.compactMap(\.features)),
+            geometry: [2, 3, 4].flatMap { perBeat in [330.0, 460.0].flatMap { width in [-0.35, 0.0, 1.0, Double(perBeat * 4)].map { slot in GeometryFixture(measure: 2, slot: slot, slotsPerMeasure: perBeat * 4, measureWidth: width, position: PracticeScoreTimeline.notePosition(measure: 2, slot: slot, slotsPerMeasure: perBeat * 4, measureWidth: width)) } } })
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(archive)
         let path = CommandLine.arguments.dropFirst().first ?? "Windows/validation/native-fixtures.json"
