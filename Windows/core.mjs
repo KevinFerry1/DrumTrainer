@@ -1,3 +1,4 @@
+import {nativeScore} from './native-scoring.mjs';
 // Platform-independent practice logic. Times are milliseconds relative to the exercise start.
 export const voices = {
   kick: 'Kick', snare: 'Snare', crossStick: 'Cross-stick', highTom: 'High tom', midTom: 'Mid tom', lowTom: 'Low tom',
@@ -57,17 +58,26 @@ export function validateDefinition(d) {
   return d;
 }
 
-export function makePattern(definition, bpm, repeats) {
+export function makePattern(definition, bpm, repeats, options = {}) {
   validateDefinition(definition);
   requireValid(boundedNumber(bpm,40,240) && Number.isInteger(repeats) && boundedNumber(repeats,1,16), 'Use 40–240 BPM and 1–16 repeats.');
   const sequence = definition.sequenceSteps
     ? range(definition.sequenceRepeats ?? 1).flatMap(() => definition.sequenceSteps.flatMap(s => range(s.repeats).map(() => s)))
     : range(repeats).map(() => definition);
   const beatMs = 60000/bpm;
-  const notes = sequence.flatMap((measure,i) => measure.hits.map(h => ({...h, time: (i*4+h.slot/subdivisions[measure.subdivision])*beatMs, measure: i+1})));
-  notes.sort((a,b) => a.time-b.time || a.voice.localeCompare(b.voice));
+  const uid = () => globalThis.crypto?.randomUUID?.() ?? `id-${Math.random().toString(36).slice(2)}`;
+  const notes = sequence.flatMap((measure,i) => {
+    const groups = new Map();
+    for (const h of measure.hits) if (measure.hits.filter(n => n.slot === h.slot).length > 1 && !groups.has(h.slot)) groups.set(h.slot,uid());
+    return measure.hits.map(h => {
+      const ns = Math.round((i*4+h.slot/subdivisions[measure.subdivision])*60000000000/bpm);
+      return {...h,id:uid(),time:ns/1e6,timeNanoseconds:ns,measure:i+1,beat:Math.floor(h.slot/subdivisions[measure.subdivision])+1,subdivision:h.slot%subdivisions[measure.subdivision],simultaneousGroupID:groups.get(h.slot) ?? null,matchingToleranceNanoseconds:Math.round((options.tolerance ?? 100)*1e6),minimumAccentVelocity:h.accent ? options.accentFloor===null ? null:(options.accentFloor ?? 100)/127:null,minimumAccentContrast:h.accent ? (options.accentContrast ?? 18)/127:null,maximumGhostVelocity:h.ghost ? options.ghostCeiling===null ? null:(options.ghostCeiling ?? 50)/127:null,minimumGhostContrast:h.ghost ? (options.ghostContrast ?? 18)/127:null};
+    });
+  });
+  notes.sort((a,b) => a.time-b.time || (a.voice < b.voice ? -1:a.voice > b.voice ? 1:0));
   requireValid(notes.length <= 10000, 'Shorten this exercise to at most 10,000 notes.');
-  return {name: definition.name, bpm, beatMs, measures: sequence.length, duration: sequence.length*4*beatMs, notes};
+  const durationNanoseconds=Math.round(sequence.length*4*60000000000/bpm);
+  return {id:uid(),name:definition.name,bpm,beatMs,beatsPerMeasure:4,subdivision:definition.subdivision ?? sequence[0].subdivision,measures:sequence.length,duration:durationNanoseconds/1e6,durationNanoseconds,notes,measureSubdivisions:sequence.map(s => s.subdivision),measureLabels:sequence.map(s => s.name),measureStarts:Array.from({length:sequence.length+1},(_,i) => Math.round(i*4*60000000000/bpm)/1e6),referenceBeats:Array.from({length:sequence.length*4},(_,i) => ({time:Math.round(i*60000000000/bpm)/1e6,measure:Math.floor(i/4)+1,beat:i%4+1,isAccent:i%4===0}))};
 }
 
 export const median = values => {
@@ -76,71 +86,8 @@ export const median = values => {
   return v.length%2 ? v[mid] : (v[mid-1]+v[mid])/2;
 };
 
-// Maximize one-to-one matches. Prefer closest unused hits; augment only when needed.
-function assign(expected, actual, tolerance, predicate) {
-  const edges = expected.map(e => actual.map((a,i) => ({i, distance: Math.abs(a.time-e.time)}))
-    .filter(x => x.distance <= tolerance+1e-7 && predicate(e,actual[x.i]))
-    .sort((a,b) => a.distance-b.distance || a.i-b.i).map(x => x.i));
-  const owner = new Map();
-  function visit(ei, seen) {
-    const available = edges[ei].find(ai => !owner.has(ai));
-    if (available !== undefined) { owner.set(available,ei); return true; }
-    for (const ai of edges[ei]) {
-      if (seen.has(ai)) continue;
-      seen.add(ai);
-      if (visit(owner.get(ai),seen)) { owner.set(ai,ei); return true; }
-    }
-    return false;
-  }
-  expected.forEach((_,ei) => visit(ei,new Set()));
-  return [...owner].map(([ai,ei]) => [expected[ei],actual[ai]]);
-}
-
-export function score(pattern, evidence, options = {}) {
-  const tolerance = options.tolerance ?? 100;
-  const expected = pattern.notes.filter(e => options.gradeKicks !== false || e.voice !== 'kick').map((e,i) => ({...e,index:i}));
-  const actual = evidence.filter(a => options.gradeKicks !== false || a.voice !== 'kick').map((a,i) => ({...a,index:i,time:a.time-(options.corrections?.[a.source] ?? 0)}));
-  requireValid(expected.length <= 10000 && actual.length <= 10000, 'Session exceeds event capacity.');
-  const usedE = new Set(), usedA = new Set(), results = [];
-  const add = (e,a,status) => {
-    if (e) usedE.add(e.index);
-    if (a) usedA.add(a.index);
-    results.push({expected:e ?? null, actual:a ?? null, status, offset:e && a ? a.time-e.time : null});
-  };
-  for (const [e,a] of assign(expected,actual,tolerance,(e,a) => e.voice === a.voice || (e.allowedVoices ?? []).includes(a.voice))) add(e,a,'correct');
-  for (const [e,a] of assign(expected.filter(e => !usedE.has(e.index)),actual.filter(a => !usedA.has(a.index)),tolerance,() => true)) add(e,a,'wrongVoice');
-  expected.filter(e => !usedE.has(e.index)).forEach(e => add(e,null,'missed'));
-  actual.filter(a => !usedA.has(a.index)).forEach(a => add(null,a,'extra'));
-  results.sort((a,b) => (a.expected?.time ?? a.actual.time)-(b.expected?.time ?? b.actual.time));
-  const correct = results.filter(r => r.status === 'correct');
-  for (const r of correct.filter(r => r.expected.accent || r.expected.ghost)) {
-    const neighbors = correct.filter(n => n !== r && n.expected.voice === r.expected.voice && !n.expected.accent && !n.expected.ghost && n.actual.velocity != null)
-      .sort((a,b) => Math.abs(a.expected.time-r.expected.time)-Math.abs(b.expected.time-r.expected.time)).slice(0,4);
-    const baseline = median(neighbors.map(n => n.actual.velocity));
-    if (r.actual.velocity == null || baseline == null) r.dynamics = 'unavailable';
-    else {
-      const contrast = Math.max(18,baseline*.2);
-      r.dynamics = r.expected.accent ? (r.actual.velocity >= Math.max(100,baseline+contrast) ? 'achieved':'below accent')
-        : (r.actual.velocity <= Math.min(50,baseline-contrast) ? 'achieved':'above ghost');
-    }
-  }
-  const offsets = correct.map(r => r.offset), mean = offsets.length ? offsets.reduce((a,b) => a+b,0)/offsets.length : null;
-  const perVoice = [...new Set([...expected,...actual].map(n => n.voice))].map(voice => {
-    const rs = correct.filter(r => r.expected.voice === voice);
-    return {voice,expected:expected.filter(n => n.voice === voice).length,played:actual.filter(n => n.voice === voice).length,correct:rs.length,error:median(rs.map(r => Math.abs(r.offset)))};
-  });
-  const groups = new Map();
-  for (const e of expected) { const group = groups.get(e.time) ?? []; group.push(e); groups.set(e.time,group); }
-  const spreads = [...groups.values()].filter(g => new Set(g.map(e => e.voice)).size > 1).flatMap(g => {
-    const rs = correct.filter(r => g.some(e => e.index === r.expected.index));
-    return rs.length === g.length ? [Math.max(...rs.map(r => r.actual.time))-Math.min(...rs.map(r => r.actual.time))] : [];
-  });
-  const recall = expected.length ? correct.length/expected.length : 0, precision = actual.length ? correct.length/actual.length : 0;
-  const error = median(offsets.map(Math.abs));
-  const dynamicResults = correct.filter(r => r.dynamics);
-  const dynamicsPass = !expected.some(e => e.accent || e.ghost) || (dynamicResults.length === expected.filter(e => e.accent || e.ghost).length && dynamicResults.filter(r => r.dynamics === 'achieved').length/dynamicResults.length >= .9);
-  return {results,expected:expected.length,played:actual.length,correct:correct.length,missed:results.filter(r => r.status === 'missed').length,extra:results.filter(r => r.status === 'extra').length,wrong:results.filter(r => r.status === 'wrongVoice').length,recall,precision,error,bias:mean,consistency:offsets.length ? Math.sqrt(offsets.reduce((s,v) => s+(v-mean)**2,0)/offsets.length):null,spread:median(spreads),perVoice,clean:expected.length>0 && recall >= .95 && precision >= .95 && error <= 25 && dynamicsPass && !options.dropped};
-}
+// Use the Mac-compatible matching, metrics, dynamics and clean-run pipeline.
+export const score = nativeScore;
 
 export class TransientDetector {
   constructor(sampleRate, threshold = .12, lockout = 40) {
@@ -171,7 +118,7 @@ export function importBackup(value) {
       requireValid(Array.isArray(s.evidence) && s.evidence.length <= 10000 && s.evidence.every(e => boundedNumber(e.time,-2000,3600000) && Object.hasOwn(voices,e.voice)), 'Invalid session evidence.');
       requireValid(typeof s.date === 'string' && Number.isFinite(Date.parse(s.date)) && s.pattern && boundedNumber(s.pattern.beatMs,250,1500) && boundedNumber(s.pattern.measures,1,128) && boundedNumber(s.pattern.duration,1,3600000), 'Invalid session pattern or date.');
       requireValid(Array.isArray(s.pattern.notes) && s.pattern.notes.length <= 10000 && s.pattern.notes.every(n => boundedNumber(n.time,0,3600000) && Object.hasOwn(voices,n.voice)), 'Invalid pattern notes.');
-      requireValid(Array.isArray(s.metrics.results) && s.metrics.results.length <= 20000 && s.metrics.results.every(r => r && ['correct','wrongVoice','missed','extra'].includes(r.status) && (r.offset == null || boundedNumber(r.offset,-1000,1000))), 'Invalid match results.');
+      requireValid(Array.isArray(s.metrics.results) && s.metrics.results.length <= 20000 && s.metrics.results.every(r => r && ['correct','wrongVoice','missed','extra','ambiguous'].includes(r.status) && (r.offset == null || boundedNumber(r.offset,-1000,1000))), 'Invalid match results.');
       requireValid(Array.isArray(s.metrics.perVoice) && s.metrics.perVoice.length <= 18 && s.metrics.perVoice.every(v => v && Object.hasOwn(voices,v.voice) && (v.error == null || boundedNumber(v.error,0,1000))), 'Invalid voice metrics.');
       requireValid(['error','bias','consistency','spread'].every(k => s.metrics[k] == null || boundedNumber(s.metrics[k],-3600000,3600000)), 'Invalid timing metrics.');
       requireValid(['expected','played','correct','missed','extra','wrong'].every(k => Number.isInteger(s.metrics[k]) && boundedNumber(s.metrics[k],0,10000)), 'Invalid session counts.');

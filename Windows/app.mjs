@@ -1,4 +1,5 @@
 import {voices,gm,exercises,subdivisions,makePattern,score,median,importBackup} from './core.mjs';
+import {analyzeNoise,makeCalibrationProfile,CalibrationHitCollector,CrosstalkGuard,soundSimilarity} from './audio-core.mjs';
 const $ = id => document.getElementById(id);
 const text = (id,value) => { $(id).textContent = value; };
 const notice = message => text('notice',message);
@@ -8,6 +9,8 @@ try { settings = JSON.parse(localStorage.getItem(key) ?? '{}'); } catch { /* Def
 let library = [], sessions = [], nativeArchives = [], db = null;
 let audio, midiAccess, stream, micNode, micSource, micMute, clickBus, scheduler, animation, autoTimer;
 let run = null, count = 0, peak = 0, noisePeaks = null, currentResult = null, streak = 0, streakKey = null;
+let calibration = null, pendingProfile = null, soundRejected = 0, crosstalkRejected = 0, micEpoch = 0;
+const crosstalk = new CrosstalkGuard();
 const scheduled = new Set(), recent = [], lastKick = new Map();
 let draft = {name:'My custom measure',subdivision:'sixteenths',hits:[]};
 
@@ -40,7 +43,7 @@ try {
   if (saved) { library = saved.exercises ?? []; sessions = saved.sessions ?? []; nativeArchives = saved.nativeArchives ?? []; }
 } catch (error) { notice(`Browser storage is unavailable. Practice still works; export a backup to keep your results. ${error.message}`); }
 
-const settingControls = ['bpm','repeats','volume','kickSource','gradeKicks','threshold','lockout','auto','advance'];
+const settingControls = ['bpm','repeats','volume','kickSource','gradeKicks','threshold','lockout','auto','advance','soundFilter','guard','match'];
 for (const id of settingControls) {
   if (settings[id] != null) {
     if ($(id).type === 'checkbox') $(id).checked = settings[id] === true;
@@ -49,9 +52,65 @@ for (const id of settingControls) {
 }
 function saveSettings() {
   for (const id of settingControls) settings[id] = $(id).type === 'checkbox' ? $(id).checked : $(id).value;
+  if (!calibration) { settings.detectors ??= {}; settings.detectors[$('microphone').value] = {threshold:Number($('threshold').value),lockout:Number($('lockout').value)}; }
   try { localStorage.setItem(key,JSON.stringify(settings)); } catch { notice('Settings could not be saved. Export practice data before closing.'); }
 }
 const inputKey = source => `${source}/${source === 'midi' ? $('midi').value : $('microphone').value}/${$('output').value}`;
+function microphoneProfile() { return settings.microphoneProfiles?.[$('microphone').value] ?? null; }
+function loadMicrophoneProfile() {
+  const profile = microphoneProfile(), config = settings.detectors?.[$('microphone').value];
+  $('threshold').value = config?.threshold ?? profile?.suggestedThreshold ?? settings.threshold ?? .12;
+  $('lockout').value = config?.lockout ?? profile?.retriggerLockoutMilliseconds ?? settings.lockout ?? 40;
+  text('calibrationStatus',profile ? `Sound filter: ${profile.kickSoundSignature ? 'Learned':'No fingerprint'} · ${profile.quality} separation · ${profile.detectedHitCount} kicks · ${profile.signalToNoiseDecibels.toFixed(1)} dB signal/noise` : 'No learned kick profile. Calibrate with 10 isolated kicks and 10 kicks while adding other pads.');
+}
+function cancelCalibration() {
+  if (!calibration && !pendingProfile) return;
+  calibration = null; pendingProfile = null; noisePeaks = null; $('saveCalibration').disabled = true;
+  loadMicrophoneProfile(); micNode?.port.postMessage(detectorSettings());
+}
+async function calibrateKicks() {
+  if (!stream) throw new Error('Enable the kick microphone first.');
+  cancel(); pendingProfile = null; $('saveCalibration').disabled = true;
+  const attempt = {stage:'noise',deviceUID:$('microphone').value,deviceName:$('microphone').selectedOptions[0].textContent,collector:new CalibrationHitCollector(Number($('lockout').value))};
+  calibration = attempt; noisePeaks = []; setRunning(true);
+  notice('Stay quiet for 3 seconds. Kick calibration is measuring room noise.');
+  await new Promise(resolve => setTimeout(resolve,3000));
+  if (calibration !== attempt) return;
+  attempt.noise = analyzeNoise(noisePeaks); noisePeaks = null;
+  if (!attempt.noise || attempt.noise.sampleCount < 10) { cancel('Noise measurement interrupted. Re-enable the microphone and try again.'); return; }
+  $('threshold').value = attempt.noise.collectionThreshold.toFixed(3); micNode.port.postMessage(detectorSettings());
+  attempt.stage = 'hits'; notice('Kick calibration: play 10 isolated kick strikes, spaced at least 180 ms apart. 0 of 20 collected.');
+}
+function collectKick(hit) {
+  if (calibration?.stage !== 'hits') return;
+  const {collector} = calibration;
+  if (!collector.record(hit.amplitude,hit.audioFeatures,hit.clock)) return;
+  const count = collector.amplitudes.length;
+  if (count < 20) { notice(`Kick calibration: ${count} of 20 collected. ${count < 10 ? 'Keep playing isolated kicks.':'Keep kicking while adding simultaneous snare, tom, and cymbal hits.'}`); return; }
+  pendingProfile = makeCalibrationProfile({deviceUID:calibration.deviceUID,deviceName:calibration.deviceName,noise:calibration.noise,hitAmplitudes:collector.amplitudes,hitSoundFeatures:collector.soundFeatures,retriggerLockoutMilliseconds:collector.suggestedLockoutMilliseconds});
+  calibration = null; setRunning(false); $('saveCalibration').disabled = false;
+  loadMicrophoneProfile(); micNode?.port.postMessage(detectorSettings());
+  notice(`Calibration ready: ${pendingProfile.quality} separation, ${pendingProfile.signalToNoiseDecibels.toFixed(1)} dB signal/noise, threshold ${pendingProfile.suggestedThreshold.toFixed(3)}, lockout ${pendingProfile.retriggerLockoutMilliseconds} ms. Review and choose Save calibration.`);
+}
+function receiveMicrophone(data,node) {
+  const hit={voice:'kick',source:'microphone',velocity:null,amplitude:data.amplitude,audioFeatures:data.features,clock:data.time,rawTimestamp:data.time,receivedAt:performance.now(),threshold:Number($('threshold').value)};
+  if (run?.kind === 'alignment' && run.source === 'microphone') { receive(hit); return; }
+  const collecting = calibration?.stage === 'hits';
+  if (collecting) collectKick(hit);
+  const epoch = micEpoch;
+  setTimeout(() => {
+    if (micNode !== node || epoch !== micEpoch) return;
+    const profile = microphoneProfile(), similarity = soundSimilarity(hit.audioFeatures,profile?.kickSoundSignature),minimumSimilarity = Number($('match').value);
+    if (similarity != null) text('calibrationStatus',`Sound filter: Learned · last match ${Math.round(similarity*100)}% · ${profile.quality} separation`);
+    if (!collecting && $('soundFilter').checked && similarity != null && similarity < minimumSimilarity) soundRejected++;
+    else {
+      crosstalk.enabled = $('guard').checked;
+      if (crosstalk.shouldSuppress({amplitude:hit.amplitude,threshold:hit.threshold,weakestKick:profile?.weakestHitAmplitude,similarity,minimumSimilarity,time:hit.clock-(corrections().microphone ?? 0)})) crosstalkRejected++;
+      else receive(hit);
+    }
+    text('filtered',`Sound rejected: ${soundRejected} · Crosstalk rejected: ${crosstalkRejected}`);
+  },$('guard').checked ? 20:0);
+}
 function loadCorrections() {
   $('midiCorrection').value = settings.corrections?.[inputKey('midi')] ?? 0;
   $('micCorrection').value = settings.corrections?.[inputKey('microphone')] ?? 0;
@@ -166,7 +225,9 @@ function wireMidi() {
     const voice = mapping()[note] ?? gm[note] ?? 'unknown';
     $('mapNote').value = note; $('mapVoice').value = voice;
     text('lastNote',`Note ${note} → ${voices[voice]} · channel ${(status & 15)+1}`);
-    receive({voice,source:'midi',note,velocity,clock:audio ? audibleTime(event.timeStamp || performance.now()):performance.now(),rawTimestamp:event.timeStamp,channel:(status & 15)+1});
+    const clock=audio ? audibleTime(event.timeStamp || performance.now()):performance.now();
+    crosstalk.observeMIDIHit(voice,clock-(corrections().midi ?? 0));
+    receive({voice,source:'midi',note,velocity,clock,rawTimestamp:event.timeStamp,channel:(status & 15)+1});
   };
   text('deviceBadge',input ? `MIDI · ${input.name}`:'No MIDI input selected');
 }
@@ -201,6 +262,7 @@ async function refreshAudioDevices() {
   loadCorrections();
 }
 function stopMicrophone() {
+  micEpoch++; crosstalk.reset(); cancelCalibration();
   if (micNode) { micNode.port.onmessage = null; micNode.disconnect(); }
   micSource?.disconnect(); micMute?.disconnect();
   for (const track of stream?.getTracks() ?? []) track.stop();
@@ -224,25 +286,28 @@ async function startMicrophone() {
     micMute = audio.createGain(); micMute.gain.value = 0;
     micSource.connect(micNode); micNode.connect(micMute); micMute.connect(audio.destination);
     micNode.port.postMessage(detectorSettings());
+    const node = micNode;
     micNode.port.onmessage = ({data}) => {
       if (data.type === 'level') { peak = data.peak; $('level').value = peak; if (noisePeaks) noisePeaks.push(peak); }
-      else receive({voice:'kick',source:'microphone',velocity:null,amplitude:data.amplitude,clock:data.time,rawTimestamp:data.time,receivedAt:performance.now()});
+      else receiveMicrophone(data,node);
     };
     for (const track of stream.getTracks()) track.onended = () => { cancel('Microphone disconnected. The attempt was discarded.'); stopMicrophone(); };
     text('listen','Disable microphone'); await refreshAudioDevices();
-    notice('Microphone enabled. Sample quiet room noise, then strike the kick pad. Check the live input log before practicing.');
+    notice('Microphone enabled. Choose Calibrate kicks to learn the kick sound, then check isolated and simultaneous kicks in the live log.');
   } catch (error) { stopMicrophone(); throw error; }
 }
 function withError(fn) { return async (...args) => { try { await fn(...args); } catch (error) { notice(error.message || String(error)); } }; }
 
 function setRunning(active) {
-  const ids = ['start','demo','click','bpm','exercise','repeats','gradeKicks','kickSource','advance','threshold','lockout','alignMidi','alignMic','noise','connect','saveExercise','customName','grid','import','export','restoreNative','again'];
+  const ids = ['start','demo','click','bpm','exercise','repeats','gradeKicks','kickSource','advance','threshold','lockout','alignMidi','alignMic','noise','connect','saveExercise','customName','grid','import','export','restoreNative','again','calibrateKick','saveCalibration','soundFilter','guard','match'];
   for (const id of ids) $(id).disabled = active;
   for (const button of $('editor').querySelectorAll('button')) button.disabled = active;
   $('stop').disabled = !active; $('repeats').disabled = active || !!selectedDefinition().sequenceSteps;
+  $('saveCalibration').disabled = active || !pendingProfile;
 }
 function clearAuto() { clearTimeout(autoTimer); autoTimer = null; }
 function cancel(message) {
+  micEpoch++; cancelCalibration(); crosstalk.reset();
   clearAuto(); clearScheduled(); run = null; lastKick.clear(); setRunning(false);
   text('phase','READY'); text('position','8-beat count-in');
   if (message) notice(message);
@@ -328,7 +393,7 @@ function showResult(s) {
     const span = document.createElement('span'); span.textContent = label; card.append(strong,span); $('metrics').append(card);
   }
   const summary = document.createElement('p'); summary.className = 'hint';
-  summary.textContent = `Precision ${percent(m.precision)} · Wrong voice ${m.wrong} · Timing consistency ${ms(m.consistency)} · Simultaneous hit spread ${ms(m.spread)}${s.options?.dropped ? ' · Interrupted / dropped evidence':''}`;
+  summary.textContent = `Precision ${percent(m.precision)} · Wrong voice ${m.wrong} · Ambiguous ${m.ambiguous ?? 0} · Timing consistency ${ms(m.consistency)} · Simultaneous hit spread ${ms(m.spread)}${m.stableTiming ? ` · Steady shared bias: grading uses ${ms(m.stableTiming.adjustedMedianAbsoluteErrorMilliseconds)} centered error`:''}${s.options?.dropped ? ' · Interrupted / dropped evidence':''}`;
   const table = document.createElement('table');
   table.innerHTML = '<thead><tr><th>Voice</th><th>Correct / expected</th><th>Median error</th></tr></thead>';
   for (const v of m.perVoice ?? []) {
@@ -426,7 +491,7 @@ function draw() {
 $('connect').onclick = withError(connectMidi);
 $('midi').onchange = () => { cancel('MIDI input changed. Select Start when ready.'); wireMidi(); settings.midi = $('midi').value; loadCorrections(); saveSettings(); };
 $('listen').onclick = withError(async () => { cancel(); if (stream) { stopMicrophone(); notice('Microphone disabled.'); } else await startMicrophone(); });
-$('microphone').onchange = withError(async () => { cancel('Microphone changed.'); const wasListening = !!stream; stopMicrophone(); settings.microphone = $('microphone').value; loadCorrections(); saveSettings(); if (wasListening) await startMicrophone(); });
+$('microphone').onchange = withError(async () => { cancel('Microphone changed.'); const wasListening = !!stream; stopMicrophone(); settings.microphone = $('microphone').value; loadCorrections(); loadMicrophoneProfile(); saveSettings(); if (wasListening) await startMicrophone(); });
 $('output').onchange = withError(async () => { cancel('Output changed. Check timing alignment with this output.'); await ensureAudio(); if (audio.setSinkId) await audio.setSinkId($('output').value); else if ($('output').value) { $('output').value = ''; notice('Select the output in Windows sound settings.'); } settings.output = $('output').value; loadCorrections(); saveSettings(); });
 $('noise').onclick = withError(async () => {
   if (!stream) throw new Error('Enable the microphone first.');
@@ -442,6 +507,14 @@ $('noise').onclick = withError(async () => {
   notice('Noise threshold saved. Play isolated kicks and check the live log; raise the threshold if other sounds trigger kicks.');
 });
 for (const id of ['threshold','lockout']) $(id).onchange = withError(() => { const config = detectorSettings(); micNode?.port.postMessage(config); saveSettings(); });
+for (const id of ['soundFilter','guard','match']) $(id).onchange = withError(() => { const value=Number($('match').value); if(!Number.isFinite(value)||value<.01||value>1)throw new Error('Use a minimum match from 0.01 to 1.'); saveSettings(); });
+$('calibrateKick').onclick = withError(calibrateKicks);
+$('saveCalibration').onclick = withError(() => {
+  if (!pendingProfile || pendingProfile.deviceUID !== $('microphone').value) throw new Error('Complete calibration for this microphone first.');
+  settings.microphoneProfiles ??= {}; settings.microphoneProfiles[pendingProfile.deviceUID] = pendingProfile;
+  settings.detectors ??= {}; settings.detectors[pendingProfile.deviceUID] = {threshold:pendingProfile.suggestedThreshold,lockout:pendingProfile.retriggerLockoutMilliseconds};
+  pendingProfile = null; $('saveCalibration').disabled = true; loadMicrophoneProfile(); micNode?.port.postMessage(detectorSettings()); saveSettings(); notice('Kick calibration saved for this microphone. Test isolated and simultaneous kicks before practicing.');
+});
 for (const [id,source] of [['midiCorrection','midi'],['micCorrection','microphone']]) $(id).onchange = withError(() => { cancel(); const value = Number($(id).value); if (!Number.isFinite(value) || Math.abs(value)>500) throw new Error('Use a correction between −500 and 500 ms.'); saveCorrection(source,value); });
 $('saveMap').onclick = withError(() => { if (!$('midi').value) throw new Error('Select a MIDI input first.'); const note = Number($('mapNote').value); if (!Number.isInteger(note) || note<0 || note>127) throw new Error('Use a MIDI note from 0 to 127.'); cancel(); settings.maps ??= {}; settings.maps[$('midi').value] ??= {}; settings.maps[$('midi').value][note] = $('mapVoice').value; saveSettings(); notice(`Saved note ${note} as ${voices[$('mapVoice').value]} for this MIDI input.`); });
 $('start').onclick = withError(() => begin()); $('again').onclick = withError(() => begin());
@@ -474,4 +547,4 @@ document.addEventListener('visibilitychange',() => { if (document.hidden && (run
 window.addEventListener('pagehide',() => { cancel(); stopMicrophone(); audio?.close(); });
 navigator.mediaDevices?.addEventListener('devicechange',withError(refreshAudioDevices));
 window.addEventListener('keydown',event => { if (event.code === 'Space' && !['INPUT','SELECT','TEXTAREA','BUTTON'].includes(document.activeElement.tagName)) { event.preventDefault(); run || autoTimer ? cancel('Paused.'):withError(() => begin())(); } });
-await withError(refreshAudioDevices)(); renderEditor(); renderHistory(); animation = requestAnimationFrame(draw);
+await withError(refreshAudioDevices)(); loadMicrophoneProfile(); renderEditor(); renderHistory(); animation = requestAnimationFrame(draw);

@@ -27,11 +27,11 @@ test('wrong, missed, extra, alternate voices and boundary timing',() => {
   assert.equal(m.results.find(r => r.status==='correct').offset,100);
 });
 test('simultaneous voices match once regardless of MIDI arrival order',() => {
-  const p = {notes:[{time:0,voice:'snare'},{time:0,voice:'kick'},{time:0,voice:'ride'}]};
+  const p = {notes:[{time:0,voice:'snare',simultaneousGroupID:'group'},{time:0,voice:'kick',simultaneousGroupID:'group'},{time:0,voice:'ride',simultaneousGroupID:'group'}]};
   const m = score(p,[{time:10,voice:'ride'},{time:-5,voice:'kick'},{time:0,voice:'snare'}]);
   assert.equal(m.correct,3); assert.equal(m.spread,15);
 });
-test('augmenting assignment avoids losing a valid hit near adjacent note windows',() => {
+test('native ordered assignment preserves valid hits near adjacent note windows',() => {
   const m = score({notes:[{time:0,voice:'kick'},{time:60,voice:'kick'}]},[{time:40,voice:'kick'},{time:-90,voice:'kick'}]);
   assert.equal(m.correct,2); assert.equal(m.extra,0); assert.equal(m.missed,0);
 });
@@ -45,7 +45,7 @@ test('Grade kicks and source corrections leave raw input unchanged',() => {
 test('sequence snapshots preserve mixed grids and their own repeat counts',() => {
   const d = {name:'Verse and fill',sequenceRepeats:2,sequenceSteps:[{name:'Verse',subdivision:'eighths',hits:[{slot:1,voice:'kick'}],repeats:2},{name:'Fill',subdivision:'triplets',hits:[{slot:1,voice:'snare'}],repeats:1}]};
   const p = makePattern(d,120,16);
-  assert.equal(p.measures,6); assert.equal(p.notes.length,6); assert.equal(p.notes[2].time,4000+500/3);
+  assert.equal(p.measures,6); assert.equal(p.notes.length,6); assert.equal(p.notes[2].time,Math.round((4000+500/3)*1e6)/1e6);
   assert.throws(() => makePattern({...d,sequenceSteps:d.sequenceSteps.map(s => ({...s,repeats:16})),sequenceRepeats:16},120,1),/128/);
 });
 test('accents and ghosts require local MIDI velocity contrast and cannot grade microphone velocity',() => {

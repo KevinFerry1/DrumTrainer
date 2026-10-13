@@ -15,7 +15,11 @@
         <div class="row"><button id="listen" class="secondary">Enable microphone</button><button id="noise" class="secondary">Sample noise</button></div>
         <label>Input level<meter id="level" min="0" max="1" value="0"></meter></label>
         <div class="row"><label>Threshold<input id="threshold" type="number" min="0.001" max="1" step="0.005" value="0.12"></label><label>Lockout · ms<input id="lockout" type="number" min="10" max="200" value="40"></label></div>
-        <p class="hint">Basic transient detection. Sample quiet room noise, then test isolated kicks and simultaneous pad hits. The Mac learned sound filter is not included.</p>
+        <div class="row"><button id="calibrateKick" class="secondary">Calibrate kicks</button><button id="saveCalibration" class="secondary" disabled>Save calibration</button></div>
+        <div class="row"><label class="check"><input id="soundFilter" type="checkbox" checked>Kick sound filter</label><label class="check"><input id="guard" type="checkbox" checked>E-kit crosstalk guard</label></div>
+        <label>Minimum sound match<input id="match" type="number" min="0.01" max="1" step="0.01" value="0.20"></label>
+        <p id="calibrationStatus" class="hint">No learned kick profile. Calibrate with 10 isolated kicks and 10 kicks while adding other pads.</p>
+        <p id="filtered" class="hint">Sound rejected: 0 · Crosstalk rejected: 0</p>
         <label>Click output<select id="output"><option value="">System default</option></select></label>
         <p id="outputHelp" class="hint">If your output is not listed, choose it in Windows sound settings.</p>
         <label>Click volume<input id="volume" type="range" min="0" max="0.5" step="0.01" value="0.15"></label>

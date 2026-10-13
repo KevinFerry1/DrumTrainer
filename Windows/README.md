@@ -3,12 +3,12 @@
 1. Copy **DrumTrainer-Windows.zip** onto the Windows computer and **Extract All**. Do not run the launcher from inside the ZIP.
 2. Open the extracted folder and double-click **Start DrumTrainer.cmd**. It opens an app window in Microsoft Edge or Chrome. Keep the small launcher window open while practicing.
 3. Connect the drum module, Blue Snowball, and your headphone output. Click **Connect MIDI**, select your kit, and grant MIDI permission. Strike each pad; use **Pad mapping** to correct its voice.
-4. Click **Enable microphone**, grant microphone permission, select the Snowball, and click **Sample noise** while the room is quiet. Test kicks in the live log. Adjust the threshold and lockout if necessary. This edition uses basic transient detection: test it with simultaneous snare/cymbal hits before relying on its scores.
+4. Click **Enable microphone**, grant microphone permission, select the Snowball, and click **Sample noise** while the room is quiet. Test kicks in the live log. Adjust the threshold and lockout if necessary. Use **Calibrate kicks**: after the quiet-room sample, play 10 isolated kicks and 10 kicks while adding other pads, then **Save calibration**. The learned spectral/decay filter and MIDI crosstalk guard now use the native algorithms; test them with your hardware before relying on scores.
 5. Select the Focusrite/headphones under **Click output**. If output selection is unavailable, choose it in Windows sound settings. Use headphones to keep the click out of the kick microphone.
 6. Run **Align MIDI** and **Align mic** for each input/output setup. After eight count-in clicks, play one hit per click for 12 clicks. Alignment includes personal playing bias; it is not a laboratory latency measurement.
 7. Choose an exercise, tempo, and repeat count, then **Start exercise**. Begin after the eight count-in clicks. Keep the app visible; hiding it cancels the attempt to prevent unreliable timing. Space starts/pauses practice when you are not editing a control.
 
-No Xcode, Python, Node.js, paid account, installation, or administrator access is required. Windows PowerShell 5.1 and a current Chromium-based Microsoft Edge or Google Chrome are required. This uses browser MIDI and audio APIs on a server bound only to this computer at `http://localhost:8765`. It has no external libraries, network assets, analytics, or uploads. The included server serves only six allowlisted app files; personal backup files are imported directly from your computer.
+No Xcode, Python, Node.js, paid account, installation, or administrator access is required. Windows PowerShell 5.1 and a current Chromium-based Microsoft Edge or Google Chrome are required. This uses browser MIDI and audio APIs on a server bound only to this computer at `http://localhost:8765`. It has no external libraries, network assets, analytics, or uploads. The included server serves only allowlisted app files; personal backup files are imported directly from your computer.
 
 ## Move your Mac data
 
@@ -25,13 +25,13 @@ Practice data is stored in this browser's local database. Always use the same br
 
 ## Included
 
-All 15 built-in drum exercises; a custom-measure editor; saved-measure/sequence imports; device-specific MIDI pad mapping; sample-level microphone transient detection in an audio worklet; quiet-room threshold calibration; ahead-scheduled accented metronome; eight-beat count-in; scrolling voice lanes; one-to-one correct/wrong/missed/extra matching; local accent/ghost velocity contrast; per-voice results; early/late bias and consistency; simultaneous-limb spread; raw Windows session evidence; persistent history; portable JSON backup; optional automatic repeats and tempo advancement after three clean runs; simulation without hardware.
+All 15 built-in drum exercises; a custom-measure editor; saved-measure/sequence imports; device-specific MIDI pad mapping; sample-level microphone transient detection in an audio worklet; guided noise/20-kick calibration; the native spectral/decay kick fingerprint and MIDI crosstalk guard; ahead-scheduled accented metronome; eight-beat count-in; scrolling voice lanes; native ordered minimum-cost correct/wrong/missed/extra/ambiguous matching; local accent/ghost velocity contrast; per-voice results; early/late bias and consistency; simultaneous-limb spread; raw Windows session evidence; persistent history; portable JSON backup; optional automatic repeats and tempo advancement after three clean runs; simulation without hardware.
 
-The port uses its own matcher and scoring version. It does not claim identical scores to the native app. Clean runs require at least 95% recall and precision, median timing error ≤25 ms, sufficient dynamics where authored, and no dropped events or missed click deadlines. Microphone input/output latency needs the alignment step. Basic transient detection cannot reliably distinguish kick-pad sound from every other sound in the room.
+The matching, metrics, accent/ghost rules, stable timing-bias adjustment, and clean-run qualification now use ports of the native Swift algorithms (scoring version 5), checked against generated Swift reference cases. Clean runs follow the Mac rule: at least 95% recall, timing error ≤25 ms (centered for an eligible stable common bias), sufficient authored dynamics, and no dropped evidence. Output scheduling interruptions also disqualify Windows runs. MIDI/input/output latency still requires hardware alignment and validation on Windows.
 
 ## Not yet ported
 
-The Mac learned kick fingerprint and MIDI crosstalk guard; audio recording/playback; kick sound reinforcement; native notation; imported MIDI/Songsterr playback; Find My Ceiling; electric piano/guitar workflows; sequence authoring and full saved-exercise editing. Mac history is preserved and displayed as summaries, not rescored. This is a usable drum-practice bridge, not full feature parity.
+Audio recording/playback; kick sound reinforcement; native notation; imported MIDI/Songsterr playback; Find My Ceiling; electric piano/guitar workflows; sequence authoring and full saved-exercise editing. Mac history is preserved and displayed as summaries, not rescored. This is a usable drum-practice bridge, not full feature parity.
 
 ## Troubleshooting
 
@@ -43,4 +43,6 @@ The Mac learned kick fingerprint and MIDI crosstalk guard; audio recording/playb
 
 ## Development / verification
 
-From the repository root, run `node --test Windows/core.test.mjs`. To preview on Mac, serve `Windows` on localhost using any static server (for example `python3 -m http.server 8765 --bind 127.0.0.1 --directory Windows`) and open it in Chrome. This does not modify the Swift app. The Windows launcher and physical Windows devices must still be validated on Windows; a Mac browser preview cannot prove hardware compatibility or latency there.
+From the repository root, run `node --test Windows/*.test.mjs`. To preview on Mac, serve `Windows` on localhost using any static server (for example `python3 -m http.server 8765 --bind 127.0.0.1 --directory Windows`) and open it in Chrome. This does not modify the Swift app. The Windows launcher and physical Windows devices must still be validated on Windows; a Mac browser preview cannot prove hardware compatibility or latency there.
+
+Reference cases are generated by compiling the repository’s actual Swift drum algorithms with `sh Windows/validation/generate-fixtures.sh`. `native-parity.test.mjs` compares classifications, matched event IDs, timings, dynamics, complete metrics, stable bias, clean qualification, exercise targets, click references, and audio features. GitHub Actions runs the JS comparison tests and the included PowerShell launcher on a Windows runner. These checks do not replace Windows 10 physical-device validation.

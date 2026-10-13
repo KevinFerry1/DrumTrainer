@@ -1,0 +1,33 @@
+name: Windows drum checks
+on:
+  push:
+    paths:
+      - 'Windows/**'
+      - '.github/workflows/windows-drum-checks.yml'
+  pull_request:
+    paths:
+      - 'Windows/**'
+      - '.github/workflows/windows-drum-checks.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Compare drum scoring and audio algorithms against Swift fixtures
+        run: node --test Windows/core.test.mjs Windows/native-parity.test.mjs
+      - name: Test included PowerShell launcher
+        shell: powershell
+        run: ./Windows/launcher.test.ps1
+      - name: Build portable package without personal data
+        run: python Windows/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DrumTrainer-Windows-preview
+          path: Windows/dist/DrumTrainer-Windows.zip

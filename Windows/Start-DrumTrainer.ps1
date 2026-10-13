@@ -1,6 +1,6 @@
 # Runs on Windows 10's included Windows PowerShell 5.1. No installation or administrator rights.
+param([switch]$NoBrowser, [ValidateRange(1024,65535)][int]$Port = 8765)
 $ErrorActionPreference = 'Stop'
-$port = 8765
 $root = $PSScriptRoot
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
 $files = @{
@@ -9,6 +9,8 @@ $files = @{
   '/style.css' = @('style.css', 'text/css; charset=utf-8')
   '/app.mjs' = @('app.mjs', 'text/javascript; charset=utf-8')
   '/core.mjs' = @('core.mjs', 'text/javascript; charset=utf-8')
+  '/native-scoring.mjs' = @('native-scoring.mjs', 'text/javascript; charset=utf-8')
+  '/audio-core.mjs' = @('audio-core.mjs', 'text/javascript; charset=utf-8')
   '/kick-worklet.mjs' = @('kick-worklet.mjs', 'text/javascript; charset=utf-8')
 }
 try {
@@ -23,8 +25,10 @@ try {
     "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
   )
   $browser = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-  if ($browser) { Start-Process -FilePath $browser -ArgumentList "--app=$url" }
-  else { Start-Process $url }
+  if (-not $NoBrowser) {
+    if ($browser) { Start-Process -FilePath $browser -ArgumentList "--app=$url" }
+    else { Start-Process $url }
+  }
   Write-Host ''
   Write-Host 'DrumTrainer is running. Keep this window open while practicing.' -ForegroundColor Green
   Write-Host "If the app did not open, open Microsoft Edge or Chrome and visit $url"
