@@ -1,4 +1,5 @@
 import {nativeScore} from './native-scoring.mjs';
+import {validateSettings,validateProgress} from './backup-state.mjs';
 // Platform-independent practice logic. Times are milliseconds relative to the exercise start.
 export const voices = {
   kick: 'Kick', snare: 'Snare', crossStick: 'Cross-stick', highTom: 'High tom', midTom: 'Mid tom', lowTom: 'Low tom',
@@ -15,7 +16,7 @@ const exercise = (id, name, subdivision, notes, guide) => ({id, name, subdivisio
 export const exercises = [
   exercise('straightEighths','Straight 8ths','eighths',hits(range(8)), 'Even, relaxed strokes on 1 & 2 & 3 & 4 &.'),
   exercise('straightSixteenths','Straight 16ths','sixteenths',hits(range(16)), 'Continuous 1 e & a with identical spacing.'),
-  exercise('triplets','Triplets','triplets',hits(range(12)), 'Three evenly spaced hits per beat: 1-trip-let.'),
+  exercise('triplets','8th-note triplets','triplets',hits(range(12)), 'Three evenly spaced hits per beat: 1-trip-let.'),
   exercise('offbeatEighths','Offbeat 8ths','eighths',hits([1,3,5,7]), 'Play each &; leave the numbered beats empty.'),
   exercise('gallop','Gallop','sixteenths',hits(repeatSlots([0,2,3])), 'One hit on the beat, then two quick sixteenths on &-a.'),
   exercise('reverseGallop','Reverse gallop','sixteenths',hits(repeatSlots([0,1,2])), 'Three hits on 1-e-& followed by the a rest.'),
@@ -122,13 +123,17 @@ export function importBackup(value) {
       requireValid(Array.isArray(s.metrics.perVoice) && s.metrics.perVoice.length <= 18 && s.metrics.perVoice.every(v => v && Object.hasOwn(voices,v.voice) && (v.error == null || boundedNumber(v.error,0,1000))), 'Invalid voice metrics.');
       requireValid(['error','bias','consistency','spread'].every(k => s.metrics[k] == null || boundedNumber(s.metrics[k],-3600000,3600000)), 'Invalid timing metrics.');
       requireValid(['expected','played','correct','missed','extra','wrong'].every(k => Number.isInteger(s.metrics[k]) && boundedNumber(s.metrics[k],0,10000)), 'Invalid session counts.');
+      requireValid(s.notes==null||typeof s.notes==='string','Invalid session notes.');requireValid(s.tags==null||(Array.isArray(s.tags)&&s.tags.every(t=>typeof t==='string'&&t.length<=1024)),'Invalid session tags.');
     });
     requireValid(value.nativeArchives == null || (Array.isArray(value.nativeArchives) && value.nativeArchives.length <= 20), 'Invalid original Mac archives.');
     for (const archive of value.nativeArchives ?? []) {
       requireValid(archive?.format !== 'DrumTrainerWindows', 'Original Mac archives must use the Mac format.');
       importBackup(archive);
     }
-    return {exercises:value.exercises,sessions:value.sessions,nativeArchives:value.nativeArchives ?? []};
+    requireValid(value.songs==null||(Array.isArray(value.songs)&&value.songs.length<=500),'Invalid song library.');
+    for(const key of ['deletedSessionIDs','deletedSongIDs'])requireValid(value[key]==null||(Array.isArray(value[key])&&value[key].length<=10000&&value[key].every(id=>typeof id==='string')),'Invalid deleted-record identifiers.');
+    validateSettings(value.settings,voices);validateProgress(value.progress);
+    return {exercises:value.exercises,sessions:value.sessions,nativeArchives:value.nativeArchives ?? [],songs:value.songs??[],progress:value.progress??null,settings:value.settings??null,deletedSessionIDs:value.deletedSessionIDs??[],deletedSongIDs:value.deletedSongIDs??[]};
   }
   requireValid(Number.isInteger(value.schemaVersion) && value.schemaVersion >= 1 && value.schemaVersion <= 11 && Array.isArray(value.customExercises) && Array.isArray(value.sessions), 'Choose a DrumTrainer Mac or Windows JSON backup.');
   requireValid(value.customExercises.length <= 1000 && value.sessions.length <= 10000, 'Mac backup is too large.');

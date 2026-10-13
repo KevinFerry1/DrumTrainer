@@ -23,6 +23,7 @@ for(const fixture of fixtures.scoring) test(`Swift scoring parity: ${fixture.nam
 for(const fixture of fixtures.patterns) test(`Swift pattern parity: ${fixture.exercise} at ${fixture.pattern.bpm} BPM`,()=>{
   const native=fixture.pattern,definition=exercises.find(e=>e.id===fixture.exercise),pattern=makePattern(definition,native.bpm,native.measures);
   const expected=[...native.expectedEvents].sort((a,b)=>a.sessionTimeNanoseconds-b.sessionTimeNanoseconds||(a.voice<b.voice?-1:a.voice>b.voice?1:0));
+  assert.equal(pattern.name,native.name);
   assert.equal(pattern.durationNanoseconds,native.durationNanoseconds);
   assert.equal(pattern.notes.length,expected.length);
   expected.forEach((n,i)=>{

@@ -11,6 +11,10 @@ $files = @{
   '/core.mjs' = @('core.mjs', 'text/javascript; charset=utf-8')
   '/native-scoring.mjs' = @('native-scoring.mjs', 'text/javascript; charset=utf-8')
   '/audio-core.mjs' = @('audio-core.mjs', 'text/javascript; charset=utf-8')
+  '/midi.mjs' = @('midi.mjs', 'text/javascript; charset=utf-8')
+  '/legacy-data.mjs' = @('legacy-data.mjs', 'text/javascript; charset=utf-8')
+  '/practice-progress.mjs' = @('practice-progress.mjs', 'text/javascript; charset=utf-8')
+  '/backup-state.mjs' = @('backup-state.mjs', 'text/javascript; charset=utf-8')
   '/kick-worklet.mjs' = @('kick-worklet.mjs', 'text/javascript; charset=utf-8')
 }
 try {
