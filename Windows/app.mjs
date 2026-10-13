@@ -3,6 +3,8 @@ import {analyzeNoise,makeCalibrationProfile,CalibrationHitCollector,CrosstalkGua
 import {parseMIDI,validateSong,songMeasures,songBPM,firstSongMeasure,makeSongPattern,importedGM} from './midi.mjs';
 import {convertNativeArchives,rescoreSession,compactSession,hydrateSession} from './legacy-data.mjs';
 import {emptyProgress,exerciseIdentity,prepareCeiling,recordProgress,mergeNativeProgress} from './practice-progress.mjs';
+import {clickSounds,kickSounds,clickSamples,kickSamples,kickDynamics} from './sound-synthesis.mjs';
+import {SessionRecorder,getTake,saveTake,deleteTake as removeTake} from './recordings.mjs';
 const $ = id => document.getElementById(id);
 const text = (id,value) => { $(id).textContent = value; };
 const notice = message => text('notice',message);
@@ -16,6 +18,9 @@ let songs = [], progress = emptyProgress(), deletedSessionIDs = [], deletedSongI
 let audio, midiAccess, stream, micNode, micSource, micMute, clickBus, scheduler, animation, autoTimer;
 let run = null, count = 0, peak = 0, noisePeaks = null, currentResult = null;
 let calibration = null, pendingProfile = null, soundRejected = 0, crosstalkRejected = 0, micEpoch = 0;
+let audioInitialization = null, outputProcessor = null, nextKickVoice = 0, lastMonitoredKick = -Infinity;
+let activeRecorder = null, starting = null, finishing = false, finishGeneration = 0, displayedTake = null, takeURL = null;
+const soundBuffers = new Map(), kickVoices = Array(6).fill(null);
 const crosstalk = new CrosstalkGuard();
 const scheduled = new Set(), recent = [], lastKick = new Map();
 let draft = {name:'My custom measure',subdivision:'sixteenths',hits:[]};
@@ -24,8 +29,9 @@ const mergeByID = (old,added) => { const values=new Map(old.map(v=>[v.id,v])); a
 
 function openDatabase() {
   return new Promise((resolve,reject) => {
-    const req = indexedDB.open('DrumTrainerWindows',1);
-    req.onupgradeneeded = () => req.result.createObjectStore('data');
+    const req = indexedDB.open('DrumTrainerWindows',2);
+    req.onupgradeneeded = () => { for(const store of ['data','takes','takeChunks'])if(!req.result.objectStoreNames.contains(store))req.result.createObjectStore(store); };
+    req.onblocked = () => notice('Close older DrumTrainer tabs so the recording database can update.');
     req.onerror = () => reject(req.error);
     req.onsuccess = () => resolve(req.result);
   });
@@ -48,6 +54,7 @@ async function persist() {
 }
 try {
   db = await openDatabase(); const saved = await readDatabase();
+  db.onversionchange=()=>{cancel('The app database was updated. Reload this window before continuing.');db.close();db=null;};
   if (saved) { library = saved.exercises ?? []; sessions = (saved.sessions ?? []).map(hydrateSession); nativeArchives = saved.nativeArchives ?? []; songs = saved.songs ?? []; progress = saved.progress ?? emptyProgress(); deletedSessionIDs = saved.deletedSessionIDs ?? []; deletedSongIDs = saved.deletedSongIDs ?? []; }
   if (nativeArchives.length) {
     const converted=convertNativeArchives(nativeArchives),before=sessions.length+songs.length;
@@ -57,7 +64,9 @@ try {
   }
 } catch (error) { notice(`Browser storage is unavailable. Practice still works; export a backup to keep your results. ${error.message}`); }
 
-const settingControls = ['bpm','repeats','volume','kickSource','gradeKicks','threshold','lockout','auto','advance','soundFilter','guard','match','autoDelay','cleanRuns','advanceStep','ceiling','ceilingStep','practiceMode','sectionStart','sectionEnd','tolerance','accentFloorEnabled','accentFloor','accentContrast','ghostCeilingEnabled','ghostCeiling','ghostContrast'];
+for(const [id,label]of Object.entries(clickSounds))$('clickSound').append(new Option(label,id));
+for(const [id,label]of Object.entries(kickSounds))$('kickSound').append(new Option(label,id));
+const settingControls = ['bpm','repeats','volume','kickSource','gradeKicks','threshold','lockout','auto','advance','soundFilter','guard','match','autoDelay','cleanRuns','advanceStep','ceiling','ceilingStep','practiceMode','sectionStart','sectionEnd','tolerance','accentFloorEnabled','accentFloor','accentContrast','ghostCeilingEnabled','ghostCeiling','ghostContrast','clickSound','clickGain','limiter','limiterCeiling','kickMonitor','kickMonitorSource','kickSound','kickGain','kickVelocity','kickMonitorLockout','recordAudio','recordInput','recordChannels'];
 for (const id of settingControls) {
   if (settings[id] != null) {
     if ($(id).type === 'checkbox') $(id).checked = settings[id] === true;
@@ -240,22 +249,24 @@ optionVoices($('mapVoice'));
 loadCorrections(); refreshExercises();
 
 async function ensureAudio() {
-  if (!audio) {
-    audio = new AudioContext({latencyHint:'interactive'});
-    clickBus = audio.createGain(); clickBus.connect(audio.destination);
-    audio.addEventListener('statechange',() => {
-      if (audio.state !== 'running' && run) cancel('Audio paused or disconnected. The attempt was discarded; press Start to try again.');
-    });
-    if ($('output').value) {
-      if (!audio.setSinkId) throw new Error('Select the output in Windows sound settings.');
-      try { await audio.setSinkId($('output').value); }
-      catch (error) { $('output').value = ''; loadCorrections(); throw error; }
-    }
-    if (!audio.setSinkId) text('outputHelp','This browser uses the Windows default output. Choose the Focusrite/headphones in Windows sound settings.');
-  }
-  await audio.resume();
-  if (audio.state !== 'running') throw new Error('Audio could not start. Check the selected output.');
-  return audio;
+  if(!audio||audio.state==='closed') {
+    if(!audioInitialization)audioInitialization=(async()=>{
+      const context=new AudioContext({latencyHint:'interactive'});audio=context;soundBuffers.clear();
+      try{
+        clickBus=context.createGain();await context.audioWorklet.addModule('output-worklet.mjs');
+        const processor=new AudioWorkletNode(context,'drum-output',{outputChannelCount:[2]});outputProcessor=processor;
+        clickBus.connect(processor);processor.connect(context.destination);
+        processor.port.onmessage=({data})=>{if(outputProcessor===processor)text('outputMeter',`App output: ${data.peakDBFS.toFixed(1)} dBFS peak · ${data.rmsDBFS.toFixed(1)} dBFS RMS · ${data.limiterReductionDB.toFixed(1)} dB reduction`);};
+        configureOutput();
+        context.addEventListener('statechange',()=>{if(context.state!=='running'&&run)cancel('Audio paused or disconnected. The attempt was discarded; press Start to try again.');});
+        if($('output').value){if(!context.setSinkId)throw new Error('Select the output in Windows sound settings.');try{await context.setSinkId($('output').value);}catch(error){$('output').value='';loadCorrections();throw error;}}
+        if(!context.setSinkId)text('outputHelp','This browser uses the Windows default output. Choose the Focusrite/headphones in Windows sound settings.');
+      }catch(error){await context.close();if(audio===context){audio=null;clickBus=null;outputProcessor=null;}throw error;}
+      finally{audioInitialization=null;}
+    })();
+    await audioInitialization;
+  }else if(audioInitialization)await audioInitialization;
+  await audio.resume();if(audio.state!=='running')throw new Error('Audio could not start. Check the selected output.');return audio;
 }
 // Translate MIDI's monotonic performance timestamp to the output's audible audio clock.
 function audibleTime(performanceMs = performance.now()) {
@@ -264,14 +275,26 @@ function audibleTime(performanceMs = performance.now()) {
   return (audio.currentTime-(audio.outputLatency ?? 0)-(audio.baseLatency ?? 0))*1000+performanceMs-performance.now();
 }
 function clickAt(time,accent) {
-  const osc = audio.createOscillator(), gain = audio.createGain();
-  osc.frequency.value = accent ? 1600:1050;
-  gain.gain.setValueAtTime(0,time);
-  gain.gain.linearRampToValueAtTime(Number($('volume').value),time+.001);
-  gain.gain.exponentialRampToValueAtTime(.0001,time+.035);
-  osc.connect(gain); gain.connect(clickBus); osc.start(time); osc.stop(time+.04);
-  scheduled.add(osc);
-  osc.onended = () => { scheduled.delete(osc); osc.disconnect(); gain.disconnect(); };
+  const sound=$('clickSound').value,gain=Number($('clickGain').value),key=`click/${sound}/${accent}/${gain}`;
+  const node=audio.createBufferSource();node.buffer=audioBuffer(key,()=>clickSamples(audio.sampleRate,sound,accent,gain));node.connect(clickBus);node.start(time);scheduled.add(node);
+  node.onended=()=>{scheduled.delete(node);node.disconnect();};
+}
+function audioBuffer(key,make){if(!soundBuffers.has(key)){const samples=make(),buffer=audio.createBuffer(1,samples.length,audio.sampleRate);buffer.copyToChannel(samples,0);soundBuffers.set(key,buffer);if(soundBuffers.size>150)soundBuffers.delete(soundBuffers.keys().next().value);}return soundBuffers.get(key);}
+function configureOutput(){
+  const gain=Number($('clickGain').value),ceiling=Number($('limiterCeiling').value),kickGain=Number($('kickGain').value),lockout=Number($('kickMonitorLockout').value);
+  if(!Number.isFinite(gain)||gain<-36||gain>24||!Number.isFinite(ceiling)||ceiling<-12||ceiling>-.5||!Number.isFinite(kickGain)||kickGain<-36||kickGain>6||!Number.isFinite(lockout)||lockout<10||lockout>150)throw new Error('Use valid click/kick gain, limiter ceiling and monitor lockout values.');
+  outputProcessor?.port.postMessage({enabled:$('limiter').checked,ceilingDBFS:ceiling});
+}
+function reinforceKick(hit,test=false){
+  if(!audio||!clickBus||(!test&&(!$('kickMonitor').checked||calibration||run?.kind==='alignment'||hit.voice!=='kick')))return;
+  const source=$('kickMonitorSource').value;if(!test&&source!=='both'&&source!==hit.source)return;
+  if(!test&&hit.clock-lastMonitoredKick<Number($('kickMonitorLockout').value))return;
+  lastMonitoredKick=hit.clock;
+  const rawVelocity=hit.velocity!=null?hit.velocity/127:Math.min(Math.max((hit.amplitude-Number($('threshold').value))/Math.max(1-Number($('threshold').value),1e-6),0),1);
+  const dynamics=kickDynamics(test?1:rawVelocity,$('kickVelocity').checked),index=Math.min(Math.max(Math.round(dynamics*15),0),15),sound=$('kickSound').value,gain=Number($('kickGain').value),key=`kick/${sound}/${gain}/${index}`,slot=nextKickVoice++%6;
+  try{kickVoices[slot]?.stop();}catch{}
+  const node=audio.createBufferSource();node.buffer=audioBuffer(key,()=>kickSamples(audio.sampleRate,sound,gain,index/15));node.connect(clickBus);node.start();kickVoices[slot]=node;
+  node.onended=()=>{node.disconnect();if(kickVoices[slot]===node)kickVoices[slot]=null;};
 }
 function clearScheduled() {
   for (const osc of scheduled) { try { osc.stop(); } catch { /* Already stopped. */ } }
@@ -284,6 +307,7 @@ function logHit(hit) {
 }
 function receive(hit) {
   logHit(hit);
+  reinforceKick(hit);
   if (!run || run.demo || run.kind === 'click') return;
   const relative = hit.clock-run.start;
   if (run.kind === 'alignment') {
@@ -297,7 +321,7 @@ function receive(hit) {
     const desired = run.kickSource;
     if ((desired === 'midi' && hit.source === 'microphone') || (desired === 'microphone' && hit.source === 'midi')) return;
     const adjusted = hit.clock-(run.options.corrections[hit.source] ?? 0);
-    if (desired === 'both' && [...lastKick].some(([source,time]) => source !== hit.source && Math.abs(adjusted-time) < 25)) return;
+    // Native grading keeps both sources. Only headphone reinforcement deduplicates audio.
     lastKick.set(hit.source,adjusted);
   }
   // Count-in is excluded, except the 100 ms early window for the first expected note.
@@ -343,10 +367,11 @@ async function connectMidi() {
 async function refreshAudioDevices() {
   if (!navigator.mediaDevices?.enumerateDevices) return;
   const devices = await navigator.mediaDevices.enumerateDevices();
-  for (const [id,kind] of [['microphone','audioinput'],['output','audiooutput']]) {
-    const previous = $(id).dataset.initialized ? $(id).value : settings[id] || '';
+  for (const [id,kind] of [['microphone','audioinput'],['output','audiooutput'],['recordInput','audioinput']]) {
+    const previous = $(id).dataset.initialized ? $(id).value : settings[id] ?? (id==='recordInput'?'follow':'');
     $(id).dataset.initialized = 'true';
     $(id).replaceChildren(new Option('System default',''));
+    if(id==='recordInput')$(id).prepend(new Option('Follow kick microphone','follow'));
     let i = 0;
     for (const device of devices.filter(d => d.kind === kind && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications')) $(id).append(new Option(device.label || `${kind === 'audioinput' ? 'Microphone':'Output'} ${++i}`,device.deviceId));
     if ([...$(id).options].some(o => o.value === previous)) $(id).value = previous;
@@ -393,6 +418,7 @@ function withError(fn) { return async (...args) => { try { await fn(...args); } 
 
 function setRunning(active) {
   const ids = ['start','demo','click','bpm','exercise','repeats','gradeKicks','kickSource','advance','threshold','lockout','alignMidi','alignMic','noise','connect','saveExercise','customName','grid','import','export','restoreNative','again','calibrateKick','saveCalibration','soundFilter','guard','match','practiceMode','song','songTrack','midiFile','deleteSong','sectionStart','sectionEnd','autoDelay','cleanRuns','advanceStep','ceiling','ceilingStep','tolerance','accentFloorEnabled','accentFloor','accentContrast','ghostCeilingEnabled','ghostCeiling','ghostContrast','editTool','loadExercise','updateExercise','deleteExercise','sequenceName','sequenceRepeats','sequenceMeasure','addSequenceStep','saveSequence','updateSequence','saveSessionNotes','rescore','deleteSession'];
+  ids.push('recordAudio','recordInput','recordChannels','takeFile','takeFolder','deleteTake','downloadTake');
   for (const id of ids) $(id).disabled = active;
   for (const button of $('editor').querySelectorAll('button')) button.disabled = active;
   for (const control of $('sequenceSteps').querySelectorAll('button,input')) control.disabled = active;
@@ -402,13 +428,20 @@ function setRunning(active) {
 }
 function clearAuto() { clearTimeout(autoTimer); autoTimer = null; }
 function cancel(message) {
+  finishGeneration++;
+  if(starting)starting.canceled=true;
+  if(activeRecorder){const recorder=activeRecorder;activeRecorder=null;recorder.abort().catch(error=>notice(`Could not clean up interrupted audio: ${error.message}`));}
+  $('takePlayer').pause();
   micEpoch++; cancelCalibration(); crosstalk.reset();
-  clearAuto(); clearScheduled(); run = null; lastKick.clear(); setRunning(false);
+  clearAuto(); clearScheduled(); run = null; lastKick.clear(); setRunning(finishing);
   text('phase','READY'); text('position','8-beat count-in');
   if (message) notice(message);
 }
-async function begin(kind = 'practice',demo = false,source = null) {
-  clearAuto(); if (run) cancel();
+async function begin(kind='practice',demo=false,source=null){
+  if(starting||finishing)return;if(run)cancel();clearAuto();const token={canceled:false};starting=token;setRunning(true);
+  try{await beginAttempt(kind,demo,source,token);}catch(error){if(!token.canceled)cancel();throw error;}finally{if(starting===token)starting=null;if(!run)setRunning(false);}
+}
+async function beginAttempt(kind = 'practice',demo = false,source = null,token) {
   let pattern;
   if (kind === 'practice') {
     if(!demo&&$('ceiling').checked){const identity=currentIdentity();$('bpm').value=prepareCeiling(progress,identity,Number($('bpm').value));await persist();}
@@ -430,9 +463,15 @@ async function begin(kind = 'practice',demo = false,source = null) {
   const opts = {...scoringOptions(),gradeKicks:$('gradeKicks').checked,corrections:corrections()};
   if (Object.values(opts.corrections).some(v => !Number.isFinite(v) || Math.abs(v) > 500)) throw new Error('Timing correction must be between −500 and 500 ms.');
   await ensureAudio();
+  if(token.canceled)return;
+  if(kind==='practice'&&!demo&&$('recordAudio').checked){
+    const recorder=new SessionRecorder(db,audio,{onStatus:message=>text('recordStatus',message)});activeRecorder=recorder;
+    await recorder.prepare($('recordInput').value==='follow'?$('microphone').value:$('recordInput').value,$('recordChannels').value);if(token.canceled){await recorder.abort();if(activeRecorder===recorder)activeRecorder=null;return;}
+  }
   const beatMs = 60000/bpm, origin = audio.currentTime*1000+300;
   run = {kind,demo,source,pattern,origin,start:origin+(kind === 'click' ? 0:8*beatMs),beatMs,duration:kind === 'click' ? Infinity : kind === 'alignment' ? 12*beatMs : pattern.duration,nextClick:0,evidence:[],options:opts,kickSource:$('kickSource').value,alignments:new Map(),late:0,exerciseId:$('exercise').value,devices:{midi:$('midi').selectedOptions[0]?.textContent,microphone:$('microphone').selectedOptions[0]?.textContent,output:$('output').selectedOptions[0]?.textContent}};
   run.identity=currentIdentity();
+  run.id=crypto.randomUUID();if(activeRecorder)activeRecorder.arm(run.id,run.start,run.start+run.duration);
   if(kind==='practice')run.clickPlan=[...Array.from({length:8},(_,i)=>({time:origin+i*beatMs,isAccent:i%4===0})),...pattern.referenceBeats.filter(b=>b.time<pattern.duration).map(b=>({time:run.start+b.time,isAccent:b.isAccent}))].sort((a,b)=>a.time-b.time);
   lastKick.clear(); currentResult = null; $('result').hidden = true; setRunning(true);
   if (demo) run.evidence = pattern.notes.map((n,i) => ({voice:n.voice,time:n.time+[-8,4,11,-3,6][i%5],clock:run.start+n.time,source:'simulation',velocity:n.accent ? 120:n.ghost ? 25:80}));
@@ -452,9 +491,13 @@ async function begin(kind = 'practice',demo = false,source = null) {
   },25);
 }
 
-function finish() {
+async function finish() {
   const completed = run; if (!completed) return;
-  clearScheduled(); run = null; setRunning(false); text('phase','COMPLETE'); text('position','Run complete');
+  finishing=true;const generation=finishGeneration;
+  const progressOptions={advance:$('advance').checked,requiredCleanSessions:Number($('cleanRuns').value),stepBPM:Number($('advanceStep').value),ceiling:$('ceiling').checked,ceilingStepBPM:Number($('ceilingStep').value)};
+  const recorder=activeRecorder;activeRecorder=null;
+  try{
+  clearScheduled(); run = null; setRunning(true); text('phase','COMPLETE'); text('position','Run complete');
   if (completed.kind === 'alignment') {
     const offsets = [...completed.alignments.values()], correction = median(offsets);
     if (offsets.length < 8 || median(offsets.map(v => Math.abs(v-correction))) > 40 || completed.late) {
@@ -465,14 +508,17 @@ function finish() {
   }
   completed.options.dropped = (completed.options.dropped ?? 0)+completed.late;
   const metrics = score(completed.pattern,completed.evidence,completed.options);
-  const session = {id:crypto.randomUUID(),name:completed.pattern.name,bpm:completed.pattern.bpm,date:new Date().toISOString(),pattern:completed.pattern,evidence:completed.evidence,metrics,options:completed.options,devices:completed.devices,demo:completed.demo,exerciseKind:completed.identity.kind,customExerciseID:completed.identity.customExerciseID,importedSongID:completed.identity.importedSongID,notes:'',tags:[]};
-  currentResult = session; showResult(session);
+  const session = {id:completed.id,name:completed.pattern.name,bpm:completed.pattern.bpm,date:new Date().toISOString(),pattern:completed.pattern,evidence:completed.evidence,metrics,options:completed.options,devices:completed.devices,demo:completed.demo,exerciseKind:completed.identity.kind,customExerciseID:completed.identity.customExerciseID,importedSongID:completed.identity.importedSongID,notes:'',tags:[]};
+  if(recorder){setRunning(true);try{session.audio=await recorder.finish({inputName:$('recordInput').selectedOptions[0]?.textContent,channelSelection:$('recordChannels').value});}catch(error){session.audioError=error.message;text('recordStatus',`Recording failed: ${error.message}`);}finally{setRunning(true);}}
+  if(generation===finishGeneration){currentResult = session;showResult(session);}
   let decision={found:false};
   if (!completed.demo) {
-    sessions.unshift(session);if(sessions.length>2000)sessions.length=2000;
-    decision=recordProgress(progress,session,{advance:$('advance').checked,requiredCleanSessions:Number($('cleanRuns').value),stepBPM:Number($('advanceStep').value),ceiling:$('ceiling').checked,ceilingStepBPM:Number($('ceilingStep').value)});
-    $('bpm').value=decision.nextBPM;saveSettings();persist();renderHistory();renderProgressStatus();
+    sessions.unshift(session);
+    decision=recordProgress(progress,session,progressOptions);
+    if(generation===finishGeneration){$('bpm').value=decision.nextBPM;saveSettings();}
+    await persist();renderHistory();renderProgressStatus();
   }
+  if(generation!==finishGeneration)return;
   notice(completed.demo ? 'Simulation complete. Connect your devices to capture your playing.' : completed.late ? 'Completed with a scheduling interruption. This run cannot qualify as clean; keep the window visible and close demanding apps.' : metrics.clean ? 'Clean run. Good timing and accuracy.' : 'Run saved. Review missed notes and timing, then try again.');
   if(!completed.demo&&decision.message)notice(decision.message);
   if ($('auto').checked && !completed.demo && !document.hidden && !decision.found) {
@@ -481,10 +527,12 @@ function finish() {
     $('stop').disabled = false;
     autoTimer = setTimeout(() => { $('stop').disabled = true; withError(() => begin())(); },delay*1000);
   }
+  }finally{if(recorder?.id)await recorder.abort().catch(error=>text('recordStatus',error.message));finishing=false;setRunning(!!run||!!starting);if(autoTimer)$('stop').disabled=false;}
 }
 function showResult(s) {
   currentResult = s; $('result').hidden = false;
   const m = s.metrics; text('resultTitle',`${s.demo ? 'Simulated · ':''}${m.clean ? 'Clean run':'Practice results'} · ${s.bpm} BPM`);
+  loadSessionTake(s).catch(error=>text('takeInfo',`Could not load this take: ${error.message}`));
   $('sessionNotes').value=s.notes??'';$('sessionTags').value=(s.tags??[]).join(', ');
   for(const id of ['saveSessionNotes','rescore','deleteSession'])$(id).disabled=!!s.demo;
   text('sessionContext',`${s.source==='mac'?'Migrated Mac session':'Windows session'} · scoring version ${m.scoringVersion??1} · MIDI ${s.devices?.midi??'none'} · mic ${s.devices?.microphone??'none'} · output ${s.devices?.output??'default'}${s.rescoredAt?` · rescored ${new Date(s.rescoredAt).toLocaleString()}`:''}`);
@@ -510,6 +558,18 @@ function showResult(s) {
     $('ledger').append(tr);
   }
 }
+async function loadSessionTake(session){
+  $('takePlayer').pause();$('takePlayer').hidden=true;$('takePlayer').removeAttribute('src');displayedTake=null;
+  if(takeURL){URL.revokeObjectURL(takeURL);takeURL=null;}
+  $('downloadTake').disabled=true;$('deleteTake').disabled=true;$('takeFile').disabled=!!session.demo;
+  if(!db||session.demo){text('takeInfo','No recording attached to this simulated run.');return;}
+  const take=await getTake(db,session.id);if(currentResult?.id!==session.id)return;
+  if(!take){text('takeInfo',session.audioError?`Recording unavailable: ${session.audioError}`:session.source==='mac'?'Import the transferred Mac-recordings folder to attach this session’s original take.':'No recording attached. Enable Save played audio before the next run, or attach a local take.');return;}
+  displayedTake=take;takeURL=URL.createObjectURL(take.blob);$('takePlayer').src=takeURL;$('takePlayer').hidden=false;
+  if($('takePlayer').setSinkId)await $('takePlayer').setSinkId($('output').value||'');
+  text('takeInfo',`${take.filename??'Saved take'} · ${(take.blob.size/1024/1024).toFixed(1)} MB${take.durationSeconds?` · ${take.durationSeconds.toFixed(1)} seconds`:''}${take.inputName?` · ${take.inputName}`:''}`);$('downloadTake').disabled=false;$('deleteTake').disabled=false;
+}
+function downloadBlob(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function nativeDate(value) { return typeof value === 'number' ? new Date((value+978307200)*1000):new Date(value); }
 function renderHistory() {
   const entries=new Map(sessions.filter(s=>!deletedSessionIDs.includes(s.id)).map(s=>[s.id,{s,date:new Date(s.date),summaryOnly:false}]));
@@ -599,7 +659,7 @@ $('connect').onclick = withError(connectMidi);
 $('midi').onchange = () => { cancel('MIDI input changed. Select Start when ready.'); wireMidi(); settings.midi = $('midi').value; loadCorrections(); saveSettings(); };
 $('listen').onclick = withError(async () => { cancel(); if (stream) { stopMicrophone(); notice('Microphone disabled.'); } else await startMicrophone(); });
 $('microphone').onchange = withError(async () => { cancel('Microphone changed.'); const wasListening = !!stream; stopMicrophone(); settings.microphone = $('microphone').value; loadCorrections(); loadMicrophoneProfile(); saveSettings(); if (wasListening) await startMicrophone(); });
-$('output').onchange = withError(async () => { cancel('Output changed. Check timing alignment with this output.'); await ensureAudio(); if (audio.setSinkId) await audio.setSinkId($('output').value); else if ($('output').value) { $('output').value = ''; notice('Select the output in Windows sound settings.'); } settings.output = $('output').value; loadCorrections(); saveSettings(); });
+$('output').onchange = withError(async () => { cancel('Output changed. Check timing alignment with this output.'); await ensureAudio(); if (audio.setSinkId) await audio.setSinkId($('output').value); else if ($('output').value) { $('output').value = ''; notice('Select the output in Windows sound settings.'); } if($('takePlayer').setSinkId)await $('takePlayer').setSinkId($('output').value||''); settings.output = $('output').value; loadCorrections(); saveSettings(); });
 $('noise').onclick = withError(async () => {
   if (!stream) throw new Error('Enable the microphone first.');
   if (noisePeaks) return;
@@ -633,6 +693,9 @@ $('stop').onclick = () => cancel('Practice and automatic repeats paused. No inte
 $('exercise').onchange = () => { cancel(); currentResult = null; updateGuide(); saveSettings(); };
 for (const id of ['bpm','repeats','gradeKicks','kickSource']) $(id).onchange = () => { cancel(); currentResult = null; saveSettings(); };
 for (const id of ['auto','advance','volume']) $(id).onchange = () => { if (id==='auto' && !$('auto').checked) { clearAuto(); if (!run) $('stop').disabled = true; } saveSettings(); };
+for(const id of ['clickSound','clickGain','limiter','limiterCeiling','kickMonitorSource','kickSound','kickGain','kickVelocity','kickMonitorLockout'])$(id).onchange=withError(()=>{configureOutput();saveSettings();});
+$('kickMonitor').onchange=withError(async()=>{if($('kickMonitor').checked)await ensureAudio();configureOutput();saveSettings();});
+$('testKick').onclick=withError(async()=>{await ensureAudio();configureOutput();reinforceKick({voice:'kick',source:'midi',velocity:127,clock:audibleTime()},true);notice('Played the selected kick voice through the selected output.');});
 $('grid').onchange=()=>{
  const previous=subdivisions[draft.subdivision]*4,next=subdivisions[$('grid').value]*4,groups=new Map();
  for(const hit of draft.hits){const copy={...hit,slot:Math.min(Math.max(Math.round(hit.slot*next/previous),0),next-1)},key=`${copy.slot}/${copy.voice}`,old=groups.get(key);if(!old||(!old.accent&&(copy.accent||(!old.ghost&&copy.ghost))))groups.set(key,copy);}
@@ -661,7 +724,12 @@ for(const id of ['autoDelay','cleanRuns','advanceStep','ceiling','ceilingStep','
 $('historySearch').oninput=()=>{historyLimit=50;renderHistory();};$('historyFilter').onchange=()=>{historyLimit=50;renderHistory();};$('historyMore').onclick=()=>{historyLimit+=50;renderHistory();};
 $('saveSessionNotes').onclick=withError(async()=>{const index=sessions.findIndex(s=>s.id===currentResult?.id);if(index<0)throw new Error('Select a saved session.');sessions[index].notes=$('sessionNotes').value.trim();sessions[index].tags=[...new Set($('sessionTags').value.split(',').map(t=>t.trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:'base'}));await persist();renderHistory();notice('Session notes and tags saved.');});
 $('rescore').onclick=withError(async()=>{cancel();const index=sessions.findIndex(s=>s.id===currentResult?.id);if(index<0)throw new Error('Select a saved session.');sessions[index]=rescoreSession(sessions[index]);await persist();showResult(sessions[index]);renderHistory();notice('Archived evidence rescored with the native-compatible rules and saved source corrections. Progression was not advanced.');});
-$('deleteSession').onclick=withError(async()=>{const id=currentResult?.id;if(!id||!sessions.some(s=>s.id===id))throw new Error('Select a saved session.');cancel();sessions=sessions.filter(s=>s.id!==id);deletedSessionIDs.push(id);currentResult=null;$('result').hidden=true;await persist();renderHistory();notice('Session removed from active history. Original imported Mac backups remain available.');});
+$('deleteSession').onclick=withError(async()=>{const id=currentResult?.id;if(!id||!sessions.some(s=>s.id===id))throw new Error('Select a saved session.');cancel();sessions=sessions.filter(s=>s.id!==id);deletedSessionIDs.push(id);if(db)await removeTake(db,id);currentResult=null;$('result').hidden=true;await persist();renderHistory();notice('Session removed from active history. Original imported Mac backups remain available.');});
+for(const id of ['recordAudio','recordInput','recordChannels'])$(id).onchange=()=>{cancel();saveSettings();};
+$('takeFile').onchange=withError(async event=>{const file=event.target.files[0];event.target.value='';if(!file)return;if(!currentResult||currentResult.demo)throw new Error('Select a saved session first.');if(file.size>500*1024*1024)throw new Error('This audio file exceeds 500 MB.');const session=currentResult;await saveTake(db,session.id,file,{filename:file.name,imported:true});await loadSessionTake(session);notice('Take attached to this session.');});
+$('takeFolder').onchange=withError(async event=>{const files=[...event.target.files];event.target.value='';if(!files.length)return;let attached=0;const ids=new Map(sessions.map(s=>[s.id.toLowerCase(),s.id]));for(const file of files){if(!/\.(m4a|wav|webm|mp3|ogg|flac)$/i.test(file.name))continue;const id=file.name.replace(/\.[^.]+$/,'').toLowerCase();if(!ids.has(id)||file.size>500*1024*1024)continue;await saveTake(db,ids.get(id),file,{filename:file.name,imported:true});attached++;}if(currentResult)await loadSessionTake(currentResult);notice(`Attached ${attached} recordings to their saved session IDs. Other files were kept in your original folder.`);});
+$('downloadTake').onclick=()=>{if(displayedTake)downloadBlob(displayedTake.blob,displayedTake.filename??`${currentResult.id}.wav`);};
+$('deleteTake').onclick=withError(async()=>{if(!currentResult||!displayedTake)return;await removeTake(db,currentResult.id);await loadSessionTake(currentResult);notice('The browser copy of this take was deleted. Imported originals remain in your transferred folder.');});
 $('export').onclick = () => download({format:'DrumTrainerWindows',version:1,exportedAt:new Date().toISOString(),exercises:library,sessions:sessions.map(compactSession),nativeArchives,songs,progress,deletedSessionIDs,deletedSongIDs,settings},`DrumTrainer-Windows-${new Date().toISOString().slice(0,10)}.json`);
 $('restoreNative').onclick = () => nativeArchives.forEach((a,i) => download(a,`DrumTrainer-original-Mac-backup-${i+1}.json`));
 $('import').onchange = withError(async event => {

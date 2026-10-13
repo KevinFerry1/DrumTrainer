@@ -6,9 +6,11 @@ const text=v=>typeof v==='string'&&v.length<=1024;
 const list=(v,limit)=>Array.isArray(v)&&v.length<=limit;
 export function validateSettings(settings,voices){
   if(settings==null)return null;requireValid(object(settings),'Invalid saved settings.');
-  const numeric={bpm:[40,240],repeats:[1,16],volume:[0,.5],threshold:[.001,1],lockout:[10,200],match:[.01,1],autoDelay:[1,30],cleanRuns:[1,10],advanceStep:[1,20],ceilingStep:[1,20],sectionStart:[1,10000],sectionEnd:[1,10000],tolerance:[0,500],accentFloor:[1,127],accentContrast:[1,127],ghostCeiling:[1,127],ghostContrast:[1,127]};
+  const numeric={bpm:[40,240],repeats:[1,16],volume:[0,.5],threshold:[.001,1],lockout:[10,200],match:[.01,1],autoDelay:[1,30],cleanRuns:[1,10],advanceStep:[1,20],ceilingStep:[1,20],sectionStart:[1,10000],sectionEnd:[1,10000],tolerance:[0,500],accentFloor:[1,127],accentContrast:[1,127],ghostCeiling:[1,127],ghostContrast:[1,127],clickGain:[-36,24],limiterCeiling:[-12,-.5],kickGain:[-36,6],kickMonitorLockout:[10,150]};
   for(const [key,[min,max]]of Object.entries(numeric))if(settings[key]!=null)requireValid(finite(Number(settings[key]),min,max),`Invalid ${key} setting.`);
-  for(const key of ['auto','advance','ceiling','gradeKicks','soundFilter','guard','accentFloorEnabled','ghostCeilingEnabled'])if(settings[key]!=null)requireValid(typeof settings[key]==='boolean',`Invalid ${key} flag.`);
+  for(const key of ['auto','advance','ceiling','gradeKicks','soundFilter','guard','accentFloorEnabled','ghostCeilingEnabled','limiter','kickMonitor','kickVelocity','recordAudio'])if(settings[key]!=null)requireValid(typeof settings[key]==='boolean',`Invalid ${key} flag.`);
+  if(settings.recordChannels!=null)requireValid(['input1','input2','loopback34'].includes(settings.recordChannels),'Invalid recording channel selection.');
+  for(const [key,choices]of Object.entries({clickSound:['cuttingElectronic','woodblock','cowbell','rimshot','warmPulse'],kickSound:['studioPunch','deepAcoustic','tightTrigger','electronicSub'],kickMonitorSource:['midi','microphone','both']}))if(settings[key]!=null)requireValid(choices.includes(settings[key]),`Invalid ${key} selection.`);
   if(settings.practiceMode!=null)requireValid(['exercise','song'].includes(settings.practiceMode),'Invalid practice mode.');if(settings.kickSource!=null)requireValid(['midi','microphone','both'].includes(settings.kickSource),'Invalid kick source.');
   for(const key of ['corrections','maps','detectors','microphoneProfiles','songSections'])if(settings[key]!=null)requireValid(object(settings[key])&&Object.keys(settings[key]).length<=2000,`Invalid ${key} collection.`);
   for(const [key,v]of Object.entries(settings.corrections??{}))requireValid(text(key)&&finite(v,-500,500),'Invalid saved timing correction.');

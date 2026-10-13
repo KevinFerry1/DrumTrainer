@@ -15,6 +15,11 @@ $files = @{
   '/legacy-data.mjs' = @('legacy-data.mjs', 'text/javascript; charset=utf-8')
   '/practice-progress.mjs' = @('practice-progress.mjs', 'text/javascript; charset=utf-8')
   '/backup-state.mjs' = @('backup-state.mjs', 'text/javascript; charset=utf-8')
+  '/sound-synthesis.mjs' = @('sound-synthesis.mjs', 'text/javascript; charset=utf-8')
+  '/output-worklet.mjs' = @('output-worklet.mjs', 'text/javascript; charset=utf-8')
+  '/recordings.mjs' = @('recordings.mjs', 'text/javascript; charset=utf-8')
+  '/recording-core.mjs' = @('recording-core.mjs', 'text/javascript; charset=utf-8')
+  '/recording-worklet.mjs' = @('recording-worklet.mjs', 'text/javascript; charset=utf-8')
   '/kick-worklet.mjs' = @('kick-worklet.mjs', 'text/javascript; charset=utf-8')
 }
 try {
