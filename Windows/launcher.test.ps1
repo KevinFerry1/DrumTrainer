@@ -15,16 +15,16 @@ $child = $null
 try {
   $arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -NoBrowser -Port $port"
   $child = Start-Process powershell.exe -ArgumentList $arguments -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-  $url = "http://localhost:${port}"
+  $url = "http://127.0.0.1:${port}"
   $ready = $false
   for ($i = 0; $i -lt 30; $i++) {
     try {
       $response = Invoke-WebRequest "$url/" -UseBasicParsing -TimeoutSec 2
       if ($response.StatusCode -eq 200) { $ready = $true; break }
-    } catch { Start-Sleep -Milliseconds 250 }
+    } catch { $lastRequestError = $_.Exception.Message; Start-Sleep -Milliseconds 250 }
     if ($child.HasExited) { throw "Launcher exited: $(Get-Content $stderr -Raw) $(Get-Content $stdout -Raw)" }
   }
-  if (-not $ready) { throw 'Local launcher did not become ready.' }
+  if (-not $ready) { throw "Local launcher did not become ready. Request: $lastRequestError. Output: $(Get-Content $stdout -Raw). Errors: $(Get-Content $stderr -Raw)" }
   if (-not $response.Content.Contains('DrumTrainer')) { throw 'Unexpected index document.' }
   foreach ($file in @('app.mjs','core.mjs','native-scoring.mjs','audio-core.mjs','kick-worklet.mjs')) {
     $module = Invoke-WebRequest "$url/$file" -UseBasicParsing

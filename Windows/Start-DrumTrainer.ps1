@@ -73,6 +73,7 @@ try {
     } catch {
       # Browsers may cancel speculative requests. Continue serving subsequent requests.
       Write-Verbose $_.Exception.Message
+      if ($NoBrowser) { Write-Host "Local request failed: $($_.Exception.Message)" }
     } finally {
       if ($reader) { $reader.Dispose(); $reader = $null }
       $client.Close()

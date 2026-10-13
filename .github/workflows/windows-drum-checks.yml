@@ -16,18 +16,21 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Compare drum scoring and audio algorithms against Swift fixtures
-        run: node --test Windows/core.test.mjs Windows/native-parity.test.mjs
+        run: |
+          $tests = Get-ChildItem Windows -Filter '*.test.mjs' | ForEach-Object { $_.FullName }
+          node --test $tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test included PowerShell launcher
         shell: powershell
         run: ./Windows/launcher.test.ps1
       - name: Build portable package without personal data
         run: python Windows/package.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: DrumTrainer-Windows-preview
           path: Windows/dist/DrumTrainer-Windows.zip
