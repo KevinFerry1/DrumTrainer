@@ -7,15 +7,55 @@ struct DrumTrainerApp: App {
 
     var body: some Scene {
         WindowGroup("Drum Performance Trainer") {
-            TabView {
-                LiveMonitorView(state: appState)
+            VStack(spacing: 0) {
+                HStack(spacing: 16) {
+                    Text("Instrument").font(.headline)
+                    Picker("Instrument", selection: Binding(
+                        get: { appState.selectedInstrument },
+                        set: { appState.selectInstrument($0) }
+                    )) {
+                        ForEach(InstrumentKind.allCases) { instrument in
+                            Label(instrument.displayName, systemImage: instrument.symbol).tag(instrument)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 560)
+                    Spacer()
+                    if !appState.selectedInstrument.supportsPractice {
+                        Text("Practice coming soon").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                Divider()
+                TabView {
+                    Group {
+                        if appState.selectedInstrument == .drums { LiveMonitorView(state: appState) }
+                        else if appState.selectedInstrument == .electricPiano { PianoLiveMonitorView(state: appState) }
+                        else { InstrumentSetupView(state: appState, section: .liveMonitor) }
+                    }
                     .tabItem { Label("Live Monitor", systemImage: "waveform.path.ecg") }
-                CalibrationView(state: appState)
+                    Group {
+                        if appState.selectedInstrument == .drums { CalibrationView(state: appState) }
+                        else if appState.selectedInstrument == .electricPiano { PianoCalibrationView(state: appState) }
+                        else { InstrumentSetupView(state: appState, section: .calibration) }
+                    }
                     .tabItem { Label("Calibration", systemImage: "tuningfork") }
-                PracticeView(state: appState)
+                    Group {
+                        if appState.selectedInstrument == .drums { PracticeView(state: appState) }
+                        else if appState.selectedInstrument == .electricPiano { PianoPracticeView(state: appState) }
+                        else { InstrumentSetupView(state: appState, section: .practice) }
+                    }
                     .tabItem { Label("Practice", systemImage: "metronome") }
-                HistoryView(state: appState)
+                    Group {
+                        if appState.selectedInstrument == .drums { HistoryView(state: appState) }
+                        else { InstrumentSetupView(state: appState, section: .history) }
+                    }
                     .tabItem { Label("History", systemImage: "chart.xyaxis.line") }
+                    SettingsView(state: appState)
+                        .tabItem { Label("Settings", systemImage: "gearshape") }
+                }
+                .id(appState.selectedInstrument)
             }
             .frame(minWidth: 980, minHeight: 720)
         }

@@ -22,6 +22,7 @@ enum StandardMIDIFileError: LocalizedError, Equatable {
 
 struct StandardMIDIFileParser: Sendable {
     func parse(data: Data, filename: String) throws -> ImportedSong {
+        guard data.count <= 100_000_000 else { throw StandardMIDIFileError.invalidHeader }
         var reader = MIDIByteReader(data: data)
         guard try reader.readASCII(count: 4) == "MThd" else { throw StandardMIDIFileError.invalidHeader }
         let headerLength = Int(try reader.readUInt32())
@@ -29,6 +30,7 @@ struct StandardMIDIFileParser: Sendable {
         let format = Int(try reader.readUInt16())
         guard format == 0 || format == 1 else { throw StandardMIDIFileError.unsupportedFormat(format) }
         let trackCount = Int(try reader.readUInt16())
+        guard (1...256).contains(trackCount) else { throw StandardMIDIFileError.invalidHeader }
         let division = try reader.readUInt16()
         guard division & 0x8000 == 0 else { throw StandardMIDIFileError.unsupportedSMPTETimeDivision }
         let ppq = Int(division)
@@ -51,7 +53,8 @@ struct StandardMIDIFileParser: Sendable {
                 name: parsed.name,
                 notes: parsed.notes.sorted { lhs, rhs in
                     lhs.tick == rhs.tick ? lhs.noteNumber < rhs.noteNumber : lhs.tick < rhs.tick
-                }
+                },
+                controls: parsed.controls
             ))
             tempos.append(contentsOf: parsed.tempos)
             signatures.append(contentsOf: parsed.signatures)
@@ -89,10 +92,18 @@ struct StandardMIDIFileParser: Sendable {
         var notes: [ImportedMIDINoteEvent] = []
         var tempos: [MIDITempoChange] = []
         var signatures: [MIDITimeSignatureChange] = []
+        var controls: [ImportedMIDIControlEvent] = []
+        var held: [Int: Int] = [:]
+        func result() -> ParsedTrack {
+            for index in held.values { notes[index].durationUncertain = true }
+            return ParsedTrack(name: name, notes: notes, tempos: tempos, signatures: signatures, controls: controls)
+        }
 
         do {
             while !reader.isAtEnd {
                 absoluteTick += Int64(try reader.readVariableLengthQuantity())
+                guard absoluteTick <= 100_000_000, notes.count <= 250_000, controls.count <= 250_000,
+                      tempos.count <= 10_000, signatures.count <= 10_000 else { throw StandardMIDIFileError.malformedTrack(index) }
                 let first = try reader.peekUInt8()
                 let status: UInt8
                 if first & 0x80 != 0 {
@@ -127,7 +138,7 @@ struct StandardMIDIFileParser: Sendable {
                             denominator: 1 << power
                         ))
                     case 0x2F:
-                        return ParsedTrack(name: name, notes: notes, tempos: tempos, signatures: signatures)
+                        return result()
                     default:
                         break
                     }
@@ -141,13 +152,31 @@ struct StandardMIDIFileParser: Sendable {
                     case 0x80, 0x90, 0xA0, 0xB0, 0xE0:
                         let data1 = try reader.readUInt8()
                         let data2 = try reader.readUInt8()
+                        guard data1 < 128, data2 < 128 else { throw StandardMIDIFileError.malformedTrack(index) }
+                        let key = Int(channel) * 128 + Int(data1)
                         if command == 0x90, data2 > 0 {
+                            let overlapping = held[key] != nil
+                            if let old = held[key] { notes[old].durationUncertain = true }
+                            held[key] = notes.count
                             notes.append(ImportedMIDINoteEvent(
                                 tick: absoluteTick,
                                 noteNumber: data1,
                                 velocity: data2,
-                                channel: channel
+                                channel: channel,
+                                durationUncertain: overlapping ? true : nil
                             ))
+                        } else if command == 0x80 || (command == 0x90 && data2 == 0) {
+                            if let index = held.removeValue(forKey: key) { notes[index].durationTicks = absoluteTick - notes[index].tick }
+                        } else if command == 0xB0 || command == 0xE0 {
+                            controls.append(ImportedMIDIControlEvent(tick: absoluteTick, channel: channel,
+                                kind: command == 0xB0 ? .controlChange : .pitchBend,
+                                controller: command == 0xB0 ? data1 : nil,
+                                value: command == 0xB0 ? Int(data2) : Int(data1) | Int(data2) << 7))
+                            if command == 0xB0 && (data1 == 120 || data1 == 123) {
+                                for (key, index) in held where key / 128 == Int(channel) {
+                                    notes[index].durationUncertain = true
+                                }
+                            }
                         }
                     case 0xC0, 0xD0:
                         _ = try reader.readUInt8()
@@ -161,7 +190,7 @@ struct StandardMIDIFileParser: Sendable {
         } catch {
             throw StandardMIDIFileError.malformedTrack(index)
         }
-        return ParsedTrack(name: name, notes: notes, tempos: tempos, signatures: signatures)
+        return result()
     }
 
     private func normalizedTempos(_ values: [MIDITempoChange]) -> [MIDITempoChange] {
@@ -191,6 +220,7 @@ struct StandardMIDIFileParser: Sendable {
         let notes: [ImportedMIDINoteEvent]
         let tempos: [MIDITempoChange]
         let signatures: [MIDITimeSignatureChange]
+        let controls: [ImportedMIDIControlEvent]
     }
 }
 

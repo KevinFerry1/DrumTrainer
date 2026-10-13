@@ -10,6 +10,8 @@ struct PracticeView: View {
     @State private var pendingImportedSongDeletion: ImportedSong?
     @State private var customNoteTool: CustomNoteTool = .note
     @State private var sequenceSourceID: UUID?
+    @State private var showsAccentNotes = false
+    @State private var showsGhostNotes = false
 
     private enum CustomNoteTool: String, CaseIterable, Identifiable {
         case note = "Notes"
@@ -35,8 +37,7 @@ struct PracticeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
+            VStack(alignment: .leading, spacing: state.practicePhase == .results ? 10 : 18) {
                 if let outcome = state.practiceOutcome, state.practicePhase == .results {
                     if let seconds = state.practiceAutoGoSecondsRemaining {
                         HStack(spacing: 12) {
@@ -44,24 +45,32 @@ struct PracticeView: View {
                                 .font(.headline)
                                 .monospacedDigit()
                             Spacer()
-                            Button("Stop Auto go") { state.practiceAutoGoEnabled = false }
+                            Button("Stop Auto go") { state.stopPracticeAutoGo() }
+                                .help("Pause repeats to read your results. Play Again resumes Auto go. Turn it off in Settings to disable it.")
                         }
                         .padding(12)
                         .background(.blue.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
                     }
                     results(outcome)
                 } else {
+                    header
                     configuration
                     scorePlayer
                     runStatus
                 }
             }
-            .padding(20)
+            .padding(state.practicePhase == .results ? 12 : 20)
         }
         .navigationTitle("Practice")
         .task { state.startHardwareMonitoring() }
         .onAppear { state.setPracticeViewVisible(true) }
         .onDisappear { state.setPracticeViewVisible(false) }
+        .onChange(of: state.practicePhase) { _, phase in
+            if phase == .results {
+                showsAccentNotes = false
+                showsGhostNotes = false
+            }
+        }
         .alert(
             "Delete saved exercise?",
             isPresented: $showsDeleteSavedExerciseConfirmation,
@@ -294,29 +303,6 @@ struct PracticeView: View {
                     } else if let song = state.selectedImportedSong {
                         Text("Original \(Int(song.originalBPM.rounded())) BPM")
                             .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-
-                HStack(alignment: .top, spacing: 12) {
-                    Text("Repeat").frame(width: 72, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Toggle("Auto go", isOn: $state.practiceAutoGoEnabled)
-                            .toggleStyle(.switch)
-                        if state.practiceAutoGoEnabled {
-                            HStack(spacing: 12) {
-                                Text("Show results for")
-                                Slider(value: $state.practiceAutoGoDelaySeconds, in: 1...30, step: 1)
-                                    .frame(maxWidth: 240)
-                                    .accessibilityLabel("Auto go results delay")
-                                Text("\(Int(state.practiceAutoGoDelaySeconds)) seconds")
-                                    .monospacedDigit()
-                                    .frame(width: 86, alignment: .trailing)
-                            }
-                            Text("Start the next round automatically after results, with the usual count-in. Stop Auto go on the results screen to take a break.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
                     }
                     Spacer()
                 }
@@ -798,11 +784,11 @@ struct PracticeView: View {
         let ghostEvaluation = outcome.ghostEvaluation
         let stableTiming = outcome.stableTimingBiasEvaluation
         let coaching = PracticeResultCoach().summarize(outcome)
-        return VStack(alignment: .leading, spacing: 16) {
+        return VStack(alignment: .leading, spacing: 8) {
             resultSummaryAndActions(outcome, coaching: coaching)
 
             GroupBox("Performance score") {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
                     if !outcome.effectiveScoringConfiguration.gradeKicks {
                         Label(
                             "Kicks were visible but ungraded. Kick expectations and detected kick events were excluded from every result below.",
@@ -817,10 +803,12 @@ struct PracticeView: View {
                             classifications: resultClassifications(outcome),
                             accentClassifications: accentClassifications(outcome),
                             ghostClassifications: ghostClassifications(outcome),
-                            fixedMeasureWidth: 350
+                            fixedMeasureWidth: 320,
+                            compact: true
                         )
-                        .frame(width: 58 + 350 * Double(outcome.pattern.measures))
+                        .frame(width: 58 + 320 * Double(outcome.pattern.measures))
                     }
+                    .frame(height: 156)
                     HStack(spacing: 18) {
                         legend("Correct", color: .green)
                         legend("Missed", color: .orange)
@@ -835,10 +823,10 @@ struct PracticeView: View {
                 }
             }
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
-                metricCard("Note recall", percent(metrics.recall), "Correct expected notes")
-                metricCard("Precision", percent(metrics.precision), "Correct played notes")
-                metricCard(
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+                compactMetricCard("Note recall", percent(metrics.recall), "Correct expected notes")
+                compactMetricCard("Precision", percent(metrics.precision), "Correct played notes")
+                compactMetricCard(
                     stableTiming == nil ? "Median error" : "Groove error",
                     milliseconds(
                         stableTiming?.adjustedMedianAbsoluteErrorMilliseconds
@@ -846,7 +834,7 @@ struct PracticeView: View {
                     ),
                     stableTiming == nil ? "Absolute timing" : "After stable-bias adjustment"
                 )
-                metricCard("Timing bias", signedMilliseconds(metrics.meanSignedOffsetMilliseconds), "Negative is early")
+                compactMetricCard("Timing bias", signedMilliseconds(metrics.meanSignedOffsetMilliseconds), "Negative is early")
             }
 
             if let stableTiming {
@@ -876,23 +864,18 @@ struct PracticeView: View {
                     countLabel("Ambiguous", metrics.ambiguousCount, color: .secondary)
                     Spacer()
                 }
-                .padding(.vertical, 6)
+                .padding(.vertical, 2)
             }
 
             GroupBox("Timing details") {
-                HStack(spacing: 28) {
-                    Label("Early: \(metrics.earlyCount)", systemImage: "arrow.left")
-                    Label("Late: \(metrics.lateCount)", systemImage: "arrow.right")
-                    Text("Mean absolute error: \(milliseconds(metrics.meanAbsoluteErrorMilliseconds))")
-                    if stableTiming != nil {
-                        Text("Raw median error: \(milliseconds(metrics.medianAbsoluteErrorMilliseconds))")
+                ViewThatFits(in: .horizontal) {
+                    timingDetails(metrics, stableTiming: stableTiming != nil)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), alignment: .leading)], alignment: .leading, spacing: 6) {
+                        timingDetailItems(metrics, stableTiming: stableTiming != nil)
                     }
-                    Text("Consistency (σ): \(milliseconds(metrics.timingStandardDeviationMilliseconds))")
-                    Text("Longest clean streak: \(metrics.longestCleanStreak)")
-                    Spacer()
                 }
                 .font(.callout.monospacedDigit())
-                .padding(.vertical, 6)
+                .padding(.vertical, 2)
             }
 
             timingTimelineResults(outcome)
@@ -924,14 +907,35 @@ struct PracticeView: View {
         }
     }
 
+    private func timingDetails(_ metrics: AggregateMetrics, stableTiming: Bool) -> some View {
+        HStack(spacing: 22) {
+            timingDetailItems(metrics, stableTiming: stableTiming)
+            Spacer(minLength: 0)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func timingDetailItems(_ metrics: AggregateMetrics, stableTiming: Bool) -> some View {
+        Label("Early: \(metrics.earlyCount)", systemImage: "arrow.left")
+        Label("Late: \(metrics.lateCount)", systemImage: "arrow.right")
+        Text("Mean absolute error: \(milliseconds(metrics.meanAbsoluteErrorMilliseconds))")
+        if stableTiming {
+            Text("Raw median error: \(milliseconds(metrics.medianAbsoluteErrorMilliseconds))")
+        }
+        Text("Consistency (σ): \(milliseconds(metrics.timingStandardDeviationMilliseconds))")
+        Text("Longest clean streak: \(metrics.longestCleanStreak)")
+    }
+
     private func resultSummaryAndActions(
         _ outcome: PracticeSessionOutcome,
         coaching: PracticeCoachingSummary
     ) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Results").font(.title2.bold())
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("Practice results").font(.title2.bold())
                     Text("\(outcome.pattern.name) · \(Int(outcome.pattern.bpm)) BPM · \(outcome.pattern.measures) measures")
                         .foregroundStyle(.secondary)
                 }
@@ -948,17 +952,14 @@ struct PracticeView: View {
             }
 
             GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Quick take", systemImage: "text.bubble.fill")
-                        .font(.headline)
-                    Text(coaching.overview)
-                        .font(.callout)
+                VStack(alignment: .leading, spacing: 4) {
+                    (Text("Quick take  ").bold() + Text(coaching.overview))
                     Text("Next try: \(coaching.nextStep)")
-                        .font(.callout.weight(.semibold))
+                        .fontWeight(.semibold)
                         .foregroundStyle(.tint)
                 }
+                .font(.callout)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 4)
             }
 
             if state.isExternalPlaybackRun {
@@ -1229,9 +1230,9 @@ struct PracticeView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 16) {
                     accentResults(accentEvaluation, pattern: pattern)
-                        .frame(minWidth: 560, maxWidth: .infinity)
+                        .frame(minWidth: 440, maxWidth: .infinity)
                     ghostResults(ghostEvaluation, pattern: pattern)
-                        .frame(minWidth: 560, maxWidth: .infinity)
+                        .frame(minWidth: 440, maxWidth: .infinity)
                 }
 
                 VStack(alignment: .leading, spacing: 16) {
@@ -1251,67 +1252,70 @@ struct PracticeView: View {
         pattern: PracticePattern
     ) -> some View {
         GroupBox("Accent dynamics") {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2),
-                    spacing: 12
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2),
+                    spacing: 8
                 ) {
-                    metricCard(
+                    compactMetricCard(
                         "Accent accuracy",
                         percent(evaluation.metrics.accuracy),
                         "≥90% required for a clean run"
                     )
-                    metricCard(
+                    compactMetricCard(
                         "Achieved",
                         "\(evaluation.metrics.achievedCount) / \(evaluation.metrics.expectedCount)",
                         "Enough same-voice dynamic contrast"
                     )
-                    metricCard(
+                    compactMetricCard(
                         "Needs contrast",
                         "\(evaluation.metrics.belowThresholdCount)",
                         "Below the relative target or optional floor"
                     )
-                    metricCard(
+                    compactMetricCard(
                         "Not evaluated",
                         "\(evaluation.metrics.notEvaluatedCount)",
                         "Missed note, missing velocity, or no baseline"
                     )
                 }
 
-                ScrollView([.horizontal, .vertical]) {
-                    Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 7) {
-                        GridRow {
-                            Text("Position")
-                            Text("Voice")
-                            Text("Baseline")
-                            Text("Target")
-                            Text("Played")
-                            Text("Result")
-                        }
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-
-                        ForEach(evaluation.results) { result in
-                            let expected = pattern.expectedEvents.first { $0.id == result.expectedEventID }
+                DisclosureGroup("Note details (\(evaluation.results.count))", isExpanded: $showsAccentNotes) {
+                    ScrollView([.horizontal, .vertical]) {
+                        Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 7) {
                             GridRow {
-                                Text(expected.map {
-                                    "M\($0.measure) B\($0.beat).\($0.subdivision + 1)"
-                                } ?? "—")
-                                Text(result.voice.displayName)
-                                Text(result.baselineVelocity.map { "\(midiVelocity($0))" } ?? "—")
-                                Text(accentTargetDescription(result))
-                                Text(result.actualVelocity.map { "\(midiVelocity($0))" } ?? "—")
-                                Text(accentClassificationName(result.classification))
-                                    .foregroundStyle(accentClassificationColor(result.classification))
+                                Text("Position")
+                                Text("Voice")
+                                Text("Baseline")
+                                Text("Target")
+                                Text("Played")
+                                Text("Result")
                             }
-                            .font(.callout.monospacedDigit())
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+
+                            ForEach(evaluation.results) { result in
+                                let expected = pattern.expectedEvents.first { $0.id == result.expectedEventID }
+                                GridRow {
+                                    Text(expected.map {
+                                        "M\($0.measure) B\($0.beat).\($0.subdivision + 1)"
+                                    } ?? "—")
+                                    Text(result.voice.displayName)
+                                    Text(result.baselineVelocity.map { "\(midiVelocity($0))" } ?? "—")
+                                    Text(accentTargetDescription(result))
+                                    Text(result.actualVelocity.map { "\(midiVelocity($0))" } ?? "—")
+                                    Text(accentClassificationName(result.classification))
+                                        .foregroundStyle(accentClassificationColor(result.classification))
+                                }
+                                .font(.callout.monospacedDigit())
+                            }
                         }
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
+                    .frame(height: 200)
                 }
-                .frame(maxHeight: 260)
+                .font(.callout)
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 2)
         }
     }
 
@@ -1356,67 +1360,70 @@ struct PracticeView: View {
         pattern: PracticePattern
     ) -> some View {
         GroupBox("Ghost dynamics") {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2),
-                    spacing: 12
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2),
+                    spacing: 8
                 ) {
-                    metricCard(
+                    compactMetricCard(
                         "Ghost accuracy",
                         percent(evaluation.metrics.accuracy),
                         "≥90% required for a clean run"
                     )
-                    metricCard(
+                    compactMetricCard(
                         "Achieved",
                         "\(evaluation.metrics.achievedCount) / \(evaluation.metrics.expectedCount)",
                         "Enough same-voice dynamic contrast"
                     )
-                    metricCard(
+                    compactMetricCard(
                         "Too loud",
                         "\(evaluation.metrics.aboveThresholdCount)",
                         "Above the relative target or optional maximum"
                     )
-                    metricCard(
+                    compactMetricCard(
                         "Not evaluated",
                         "\(evaluation.metrics.notEvaluatedCount)",
                         "Missed note, missing velocity, or no baseline"
                     )
                 }
 
-                ScrollView([.horizontal, .vertical]) {
-                    Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 7) {
-                        GridRow {
-                            Text("Position")
-                            Text("Voice")
-                            Text("Baseline")
-                            Text("Target")
-                            Text("Played")
-                            Text("Result")
-                        }
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-
-                        ForEach(evaluation.results) { result in
-                            let expected = pattern.expectedEvents.first { $0.id == result.expectedEventID }
+                DisclosureGroup("Note details (\(evaluation.results.count))", isExpanded: $showsGhostNotes) {
+                    ScrollView([.horizontal, .vertical]) {
+                        Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 7) {
                             GridRow {
-                                Text(expected.map {
-                                    "M\($0.measure) B\($0.beat).\($0.subdivision + 1)"
-                                } ?? "—")
-                                Text(result.voice.displayName)
-                                Text(result.baselineVelocity.map { "\(midiVelocity($0))" } ?? "—")
-                                Text(ghostTargetDescription(result))
-                                Text(result.actualVelocity.map { "\(midiVelocity($0))" } ?? "—")
-                                Text(ghostClassificationName(result.classification))
-                                    .foregroundStyle(ghostClassificationColor(result.classification))
+                                Text("Position")
+                                Text("Voice")
+                                Text("Baseline")
+                                Text("Target")
+                                Text("Played")
+                                Text("Result")
                             }
-                            .font(.callout.monospacedDigit())
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+
+                            ForEach(evaluation.results) { result in
+                                let expected = pattern.expectedEvents.first { $0.id == result.expectedEventID }
+                                GridRow {
+                                    Text(expected.map {
+                                        "M\($0.measure) B\($0.beat).\($0.subdivision + 1)"
+                                    } ?? "—")
+                                    Text(result.voice.displayName)
+                                    Text(result.baselineVelocity.map { "\(midiVelocity($0))" } ?? "—")
+                                    Text(ghostTargetDescription(result))
+                                    Text(result.actualVelocity.map { "\(midiVelocity($0))" } ?? "—")
+                                    Text(ghostClassificationName(result.classification))
+                                        .foregroundStyle(ghostClassificationColor(result.classification))
+                                }
+                                .font(.callout.monospacedDigit())
+                            }
                         }
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
+                    .frame(height: 200)
                 }
-                .frame(maxHeight: 260)
+                .font(.callout)
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 2)
         }
     }
 
@@ -2231,6 +2238,21 @@ struct PracticeView: View {
         }
     }
 
+    private func compactMetricCard(_ title: String, _ value: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title).font(.callout).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text(value).font(.title3.bold().monospacedDigit())
+            }
+            Text(detail).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+    }
+
     private func metricCard(_ title: String, _ value: String, _ detail: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title).font(.callout).foregroundStyle(.secondary)
@@ -2243,7 +2265,7 @@ struct PracticeView: View {
     }
 
     private func countLabel(_ title: String, _ count: Int, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text("\(count)").font(.title3.bold().monospacedDigit()).foregroundStyle(color)
             Text(title).font(.caption).foregroundStyle(.secondary)
         }

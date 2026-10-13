@@ -10,6 +10,7 @@ struct PracticeScoreView: View {
     var ghostClassifications: [UUID: GhostResultClassification] = [:]
     var previewOnly = false
     var fixedMeasureWidth: Double?
+    var compact = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -48,7 +49,7 @@ struct PracticeScoreView: View {
                     .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
             )
         }
-        .frame(height: 220)
+        .frame(height: compact ? 144 : 220)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Drum notation for \(pattern.name)")
         .accessibilityValue(accessibilityDescription)
@@ -65,6 +66,7 @@ struct PracticeScoreView: View {
         let staffTop = 52.0
         let staffSpacing = 10.0
         let staffBottom = staffTop + staffSpacing * 4
+        let guideBottom = compact ? 134.0 : 154.0
         let visibleMinX = viewportOffset - measureWidth
         let visibleMaxX = viewportOffset + size.width + measureWidth
 
@@ -140,12 +142,12 @@ struct PracticeScoreView: View {
                     measureWidth: measureWidth
                 ) - viewportOffset
                 context.fill(
-                    Path(CGRect(x: beatLeft, y: 17, width: beatRight - beatLeft, height: 139)),
+                    Path(CGRect(x: beatLeft, y: 17, width: beatRight - beatLeft, height: guideBottom - 15)),
                     with: .color(Color.accentColor.opacity(beat.isMultiple(of: 2) ? 0.045 : 0.018))
                 )
                 strokeLine(
                     from: CGPoint(x: beatLeft, y: 18),
-                    to: CGPoint(x: beatLeft, y: 154),
+                    to: CGPoint(x: beatLeft, y: guideBottom),
                     color: .secondary.opacity(0.2),
                     width: 1,
                     context: &context
@@ -228,7 +230,7 @@ struct PracticeScoreView: View {
             let x = playheadX - viewportOffset
             strokeLine(
                 from: CGPoint(x: x, y: 15),
-                to: CGPoint(x: x, y: 153),
+                to: CGPoint(x: x, y: guideBottom - 1),
                 color: .accentColor.opacity(0.9),
                 width: 2,
                 context: &context
@@ -242,16 +244,18 @@ struct PracticeScoreView: View {
             context.fill(triangle, with: .color(.accentColor))
         }
 
-        drawLabel(
-            usesMultipleVoices
-                ? "Cymbal × · snare center · kick low · rests gray · follow the blue playhead"
-                : "Bass drum · rests are gray · follow the blue playhead",
-            at: CGPoint(x: 14, y: 186),
-            font: .caption,
-            color: .secondary,
-            anchor: .leading,
-            context: &context
-        )
+        if !compact {
+            drawLabel(
+                usesMultipleVoices
+                    ? "Cymbal × · snare center · kick low · rests gray · follow the blue playhead"
+                    : "Bass drum · rests are gray · follow the blue playhead",
+                at: CGPoint(x: 14, y: 186),
+                font: .caption,
+                color: .secondary,
+                anchor: .leading,
+                context: &context
+            )
+        }
     }
 
     private func drawNote(

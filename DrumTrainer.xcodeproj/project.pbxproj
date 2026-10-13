@@ -6,6 +6,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000000000000000000023 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000023 /* SettingsView.swift */; };
 		A10000000000000000000020 /* ExternalPlaybackListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020; };
 		A10000000000000000000021 /* PracticeAudioRecording.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* PracticeAudioRecording.swift */; };
 		A10000000000000000000022 /* PracticeRecordingInputService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* PracticeRecordingInputService.swift */; };
@@ -53,6 +54,18 @@
 		A2000000000000000000000B /* MicrophoneCalibrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000B /* MicrophoneCalibrationTests.swift */; };
 		A2000000000000000000000C /* MicrophoneCrosstalkGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000C /* MicrophoneCrosstalkGuardTests.swift */; };
 		A2000000000000000000000D /* StandardMIDIImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000D /* StandardMIDIImportTests.swift */; };
+		A10000000000000000000024 /* Instrument.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000024 /* Instrument.swift */; };
+		A10000000000000000000025 /* PracticeSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000025 /* PracticeSessionController.swift */; };
+		A10000000000000000000026 /* InstrumentSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000026 /* InstrumentSetupView.swift */; };
+		A2000000000000000000000E /* InstrumentFoundationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000E /* InstrumentFoundationTests.swift */; };
+		A10000000000000000000027 /* MIDIChannelEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000027 /* MIDIChannelEvent.swift */; };
+		A10000000000000000000028 /* PianoModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000028 /* PianoModels.swift */; };
+		A10000000000000000000029 /* PianoNoteTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000029 /* PianoNoteTracker.swift */; };
+		A1000000000000000000002A /* PianoEventMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000002A /* PianoEventMatcher.swift */; };
+		A1000000000000000000002B /* PianoPracticeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000002B /* PianoPracticeController.swift */; };
+		A1000000000000000000002C /* PianoViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000002C /* PianoViews.swift */; };
+		A2000000000000000000000F /* PianoCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000F; };
+		A1000000000000000000002D /* PianoWorkflowModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000002D /* PianoWorkflowModels.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -66,6 +79,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B10000000000000000000023 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B10000000000000000000020 /* ExternalPlaybackListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrumTrainer/Services/Audio/ExternalPlaybackListener.swift; sourceTree = SOURCE_ROOT; };
 		B10000000000000000000021 /* PracticeAudioRecording.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PracticeAudioRecording.swift; sourceTree = "<group>"; };
 		B10000000000000000000022 /* PracticeRecordingInputService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PracticeRecordingInputService.swift; sourceTree = "<group>"; };
@@ -115,6 +129,18 @@
 		B2000000000000000000000D /* StandardMIDIImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandardMIDIImportTests.swift; sourceTree = "<group>"; };
 		B30000000000000000000001 /* DrumTrainer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DrumTrainer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B30000000000000000000002 /* DrumTrainerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DrumTrainerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000024 /* Instrument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Instrument.swift; sourceTree = "<group>"; };
+		B10000000000000000000025 /* PracticeSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PracticeSessionController.swift; sourceTree = "<group>"; };
+		B10000000000000000000026 /* InstrumentSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstrumentSetupView.swift; sourceTree = "<group>"; };
+		B2000000000000000000000E /* InstrumentFoundationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstrumentFoundationTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000027 /* MIDIChannelEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MIDIChannelEvent.swift; sourceTree = "<group>"; };
+		B10000000000000000000028 /* PianoModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PianoModels.swift; sourceTree = "<group>"; };
+		B10000000000000000000029 /* PianoNoteTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PianoNoteTracker.swift; sourceTree = "<group>"; };
+		B1000000000000000000002A /* PianoEventMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PianoEventMatcher.swift; sourceTree = "<group>"; };
+		B1000000000000000000002B /* PianoPracticeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PianoPracticeController.swift; sourceTree = "<group>"; };
+		B1000000000000000000002C /* PianoViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PianoViews.swift; sourceTree = "<group>"; };
+		B2000000000000000000000F /* PianoCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PianoCoreTests.swift; sourceTree = "<group>"; };
+		B1000000000000000000002D /* PianoWorkflowModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PianoWorkflowModels.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -123,6 +149,7 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		D10000000000000000000015 /* Settings */ = {isa = PBXGroup; children = (B10000000000000000000026 /* InstrumentSetupView.swift */, B10000000000000000000023 /* SettingsView.swift */); path = Settings; sourceTree = "<group>"; };
 		D10000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
@@ -136,21 +163,21 @@
 		D10000000000000000000002 /* DrumTrainer */ = {isa = PBXGroup; children = (D10000000000000000000003 /* App */, D10000000000000000000004 /* Domain */, D10000000000000000000006 /* Services */, D1000000000000000000000B /* Features */); path = DrumTrainer; sourceTree = "<group>"; };
 		D10000000000000000000003 /* App */ = {isa = PBXGroup; children = (B10000000000000000000001 /* DrumTrainerApp.swift */, B10000000000000000000002 /* AppState.swift */); path = App; sourceTree = "<group>"; };
 		D10000000000000000000004 /* Domain */ = {isa = PBXGroup; children = (D10000000000000000000005 /* Models */, D10000000000000000000010 /* Patterns */, D10000000000000000000011 /* Scoring */); path = Domain; sourceTree = "<group>"; };
-		D10000000000000000000005 /* Models */ = {isa = PBXGroup; children = (B10000000000000000000003 /* DrumVoice.swift */, B10000000000000000000004 /* EventSource.swift */, B10000000000000000000005 /* EventMetadata.swift */, B10000000000000000000006 /* PerformanceEvent.swift */, B10000000000000000000011 /* PracticeModels.swift */, B1000000000000000000001C /* ImportedSong.swift */); path = Models; sourceTree = "<group>"; };
+		D10000000000000000000005 /* Models */ = {isa = PBXGroup; children = (B1000000000000000000002D /* PianoWorkflowModels.swift */, B10000000000000000000028 /* PianoModels.swift */, B10000000000000000000024 /* Instrument.swift */, B10000000000000000000003 /* DrumVoice.swift */, B10000000000000000000004 /* EventSource.swift */, B10000000000000000000005 /* EventMetadata.swift */, B10000000000000000000006 /* PerformanceEvent.swift */, B10000000000000000000011 /* PracticeModels.swift */, B1000000000000000000001C /* ImportedSong.swift */); path = Models; sourceTree = "<group>"; };
 		D10000000000000000000010 /* Patterns */ = {isa = PBXGroup; children = (B10000000000000000000012 /* KickPatternGenerator.swift */, B1000000000000000000001E /* ImportedSongPatternGenerator.swift */); path = Patterns; sourceTree = "<group>"; };
-		D10000000000000000000011 /* Scoring */ = {isa = PBXGroup; children = (B10000000000000000000013 /* EventMatcher.swift */, B10000000000000000000014 /* ScoringMetrics.swift */, B10000000000000000000015 /* PracticeSessionRecording.swift */); path = Scoring; sourceTree = "<group>"; };
+		D10000000000000000000011 /* Scoring */ = {isa = PBXGroup; children = (B1000000000000000000002A /* PianoEventMatcher.swift */, B10000000000000000000025 /* PracticeSessionController.swift */, B10000000000000000000013 /* EventMatcher.swift */, B10000000000000000000014 /* ScoringMetrics.swift */, B10000000000000000000015 /* PracticeSessionRecording.swift */); path = Scoring; sourceTree = "<group>"; };
 		D10000000000000000000006 /* Services */ = {isa = PBXGroup; children = (D10000000000000000000007 /* Timing */, D10000000000000000000008 /* EventStreaming */, D10000000000000000000009 /* MIDI */, D1000000000000000000000A /* Audio */, D1000000000000000000000F /* Metronome */, D10000000000000000000013 /* Calibration */); path = Services; sourceTree = "<group>"; };
 		D10000000000000000000007 /* Timing */ = {isa = PBXGroup; children = (B10000000000000000000007 /* ClockProviding.swift */, B10000000000000000000008 /* HostTimeConverter.swift */, B10000000000000000000009 /* SessionTimeline.swift */); path = Timing; sourceTree = "<group>"; };
 		D10000000000000000000008 /* EventStreaming */ = {isa = PBXGroup; children = (B1000000000000000000000A /* BoundedEventBuffer.swift */); path = EventStreaming; sourceTree = "<group>"; };
-		D10000000000000000000009 /* MIDI */ = {isa = PBXGroup; children = (B1000000000000000000000B /* MIDINoteMapper.swift */, B1000000000000000000000E /* MIDIInputService.swift */, B1000000000000000000001D /* StandardMIDIFileParser.swift */); path = MIDI; sourceTree = "<group>"; };
+		D10000000000000000000009 /* MIDI */ = {isa = PBXGroup; children = (B10000000000000000000029 /* PianoNoteTracker.swift */, B10000000000000000000027 /* MIDIChannelEvent.swift */, B1000000000000000000000B /* MIDINoteMapper.swift */, B1000000000000000000000E /* MIDIInputService.swift */, B1000000000000000000001D /* StandardMIDIFileParser.swift */); path = MIDI; sourceTree = "<group>"; };
 		D1000000000000000000000A /* Audio */ = {isa = PBXGroup; children = (B1000000000000000000000C /* KickTransientDetector.swift */, B1000000000000000000001B /* KickSoundClassifier.swift */, B1000000000000000000000F /* AudioInputService.swift */, B10000000000000000000021 /* PracticeAudioRecording.swift */, B10000000000000000000022 /* PracticeRecordingInputService.swift */, B1000000000000000000001A /* MicrophoneCrosstalkGuard.swift */); path = Audio; sourceTree = "<group>"; };
 		D1000000000000000000000F /* Metronome */ = {isa = PBXGroup; children = (B10000000000000000000010 /* MetronomeEngine.swift */); path = Metronome; sourceTree = "<group>"; };
 		D10000000000000000000013 /* Calibration */ = {isa = PBXGroup; children = (B10000000000000000000017 /* MicrophoneCalibration.swift */, B1000000000000000000001F /* TimingAlignmentCalibration.swift */); path = Calibration; sourceTree = "<group>"; };
-		D1000000000000000000000B /* Features */ = {isa = PBXGroup; children = (D1000000000000000000000E /* LiveMonitor */, D10000000000000000000014 /* Calibration */, D10000000000000000000012 /* Practice */); path = Features; sourceTree = "<group>"; };
+		D1000000000000000000000B /* Features */ = {isa = PBXGroup; children = (D1000000000000000000000E /* LiveMonitor */, D10000000000000000000014 /* Calibration */, D10000000000000000000012 /* Practice */, D10000000000000000000015 /* Settings */); path = Features; sourceTree = "<group>"; };
 		D1000000000000000000000E /* LiveMonitor */ = {isa = PBXGroup; children = (B1000000000000000000000D /* LiveMonitorView.swift */); path = LiveMonitor; sourceTree = "<group>"; };
-		D10000000000000000000012 /* Practice */ = {isa = PBXGroup; children = (B10000000000000000000016 /* PracticeView.swift */, B10000000000000000000019 /* PracticeScoreView.swift */); path = Practice; sourceTree = "<group>"; };
+		D10000000000000000000012 /* Practice */ = {isa = PBXGroup; children = (B1000000000000000000002C /* PianoViews.swift */, B1000000000000000000002B /* PianoPracticeController.swift */, B10000000000000000000016 /* PracticeView.swift */, B10000000000000000000019 /* PracticeScoreView.swift */); path = Practice; sourceTree = "<group>"; };
 		D10000000000000000000014 /* Calibration */ = {isa = PBXGroup; children = (B10000000000000000000018 /* CalibrationView.swift */); path = Calibration; sourceTree = "<group>"; };
-		D1000000000000000000000C /* DrumTrainerTests */ = {isa = PBXGroup; children = (B20000000000000000000001 /* HostTimeTests.swift */, B20000000000000000000002 /* MIDINoteMapperTests.swift */, B20000000000000000000003 /* KickTransientDetectorTests.swift */, B20000000000000000000004 /* EventOrderingTests.swift */, B20000000000000000000005 /* MIDI1UMPParserTests.swift */, B20000000000000000000006 /* MetronomeTimelineTests.swift */, B20000000000000000000007 /* KickPatternGeneratorTests.swift */, B20000000000000000000008 /* EventMatcherTests.swift */, B20000000000000000000009 /* ScoringMetricsTests.swift */, B2000000000000000000000A /* PracticeSessionRecordingTests.swift */, B2000000000000000000000B /* MicrophoneCalibrationTests.swift */, B2000000000000000000000C /* MicrophoneCrosstalkGuardTests.swift */, B2000000000000000000000D /* StandardMIDIImportTests.swift */); path = DrumTrainerTests; sourceTree = "<group>"; };
+		D1000000000000000000000C /* DrumTrainerTests */ = {isa = PBXGroup; children = (B2000000000000000000000F /* PianoCoreTests.swift */, B2000000000000000000000E /* InstrumentFoundationTests.swift */, B20000000000000000000001 /* HostTimeTests.swift */, B20000000000000000000002 /* MIDINoteMapperTests.swift */, B20000000000000000000003 /* KickTransientDetectorTests.swift */, B20000000000000000000004 /* EventOrderingTests.swift */, B20000000000000000000005 /* MIDI1UMPParserTests.swift */, B20000000000000000000006 /* MetronomeTimelineTests.swift */, B20000000000000000000007 /* KickPatternGeneratorTests.swift */, B20000000000000000000008 /* EventMatcherTests.swift */, B20000000000000000000009 /* ScoringMetricsTests.swift */, B2000000000000000000000A /* PracticeSessionRecordingTests.swift */, B2000000000000000000000B /* MicrophoneCalibrationTests.swift */, B2000000000000000000000C /* MicrophoneCrosstalkGuardTests.swift */, B2000000000000000000000D /* StandardMIDIImportTests.swift */); path = DrumTrainerTests; sourceTree = "<group>"; };
 		D1000000000000000000000D /* Products */ = {isa = PBXGroup; children = (B30000000000000000000001 /* DrumTrainer.app */, B30000000000000000000002 /* DrumTrainerTests.xctest */); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
@@ -210,8 +237,8 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		F30000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000020, A10000000000000000000021, A10000000000000000000022, A10000000000000000000001, A10000000000000000000002, A10000000000000000000003, A10000000000000000000004, A10000000000000000000005, A10000000000000000000006, A10000000000000000000007, A10000000000000000000008, A10000000000000000000009, A1000000000000000000000A, A1000000000000000000000B, A1000000000000000000000C, A1000000000000000000000D, A1000000000000000000000E, A1000000000000000000000F, A10000000000000000000010, A10000000000000000000011, A10000000000000000000012, A10000000000000000000013, A10000000000000000000014, A10000000000000000000015, A10000000000000000000016, A10000000000000000000017, A10000000000000000000018, A10000000000000000000019, A1000000000000000000001A, A1000000000000000000001B, A1000000000000000000001C, A1000000000000000000001D, A1000000000000000000001E, A1000000000000000000001F); runOnlyForDeploymentPostprocessing = 0; };
-		F30000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A20000000000000000000001, A20000000000000000000002, A20000000000000000000003, A20000000000000000000004, A20000000000000000000005, A20000000000000000000006, A20000000000000000000007, A20000000000000000000008, A20000000000000000000009, A2000000000000000000000A, A2000000000000000000000B, A2000000000000000000000C, A2000000000000000000000D); runOnlyForDeploymentPostprocessing = 0; };
+		F30000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000002D, A1000000000000000000002C, A1000000000000000000002B, A1000000000000000000002A, A10000000000000000000029, A10000000000000000000028, A10000000000000000000027, A10000000000000000000026, A10000000000000000000025, A10000000000000000000024, A10000000000000000000023, A10000000000000000000020, A10000000000000000000021, A10000000000000000000022, A10000000000000000000001, A10000000000000000000002, A10000000000000000000003, A10000000000000000000004, A10000000000000000000005, A10000000000000000000006, A10000000000000000000007, A10000000000000000000008, A10000000000000000000009, A1000000000000000000000A, A1000000000000000000000B, A1000000000000000000000C, A1000000000000000000000D, A1000000000000000000000E, A1000000000000000000000F, A10000000000000000000010, A10000000000000000000011, A10000000000000000000012, A10000000000000000000013, A10000000000000000000014, A10000000000000000000015, A10000000000000000000016, A10000000000000000000017, A10000000000000000000018, A10000000000000000000019, A1000000000000000000001A, A1000000000000000000001B, A1000000000000000000001C, A1000000000000000000001D, A1000000000000000000001E, A1000000000000000000001F); runOnlyForDeploymentPostprocessing = 0; };
+		F30000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A2000000000000000000000F, A2000000000000000000000E, A20000000000000000000001, A20000000000000000000002, A20000000000000000000003, A20000000000000000000004, A20000000000000000000005, A20000000000000000000006, A20000000000000000000007, A20000000000000000000008, A20000000000000000000009, A2000000000000000000000A, A2000000000000000000000B, A2000000000000000000000C, A2000000000000000000000D); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */

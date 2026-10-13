@@ -20,21 +20,6 @@ enum PracticePhase: Equatable, Sendable {
     }
 }
 
-enum PracticeExerciseMode: String, CaseIterable, Identifiable, Sendable {
-    case builtIn
-    case custom
-    case importedSong
-
-    var id: String { rawValue }
-    var displayName: String {
-        switch self {
-        case .builtIn: "Built-in"
-        case .custom: "Custom measure"
-        case .importedSong: "Imported song"
-        }
-    }
-}
-
 enum MicrophoneCalibrationPhase: Equatable, Sendable {
     case idle
     case preparingInput
@@ -82,11 +67,23 @@ final class AppState: ObservableObject {
 
     private let clock: any ClockProviding
     private let timeline: SessionTimeline
-    private let eventStream: UnifiedEventStream
+    private var eventStream: UnifiedEventStream
+    private let eventCapacity: Int
+    private let practiceSession = PracticeSessionController()
+    let piano: PianoPracticeController
+    @Published var pianoLibrary = PianoWorkflowArchive()
+    @Published private(set) var pianoWorkflowMessage: String?
+    @Published private(set) var pianoAutoGoSecondsRemaining: Int?
+    private var pianoAutoGoTask: Task<Void, Never>?
+    private var pianoAutoGoDeadline: UInt64?
+    private var pianoPracticeVisible = false
+    private var pianoAttemptContext: (devices: PracticeSessionDeviceContext, recording: InstrumentRecordingPreferences, settings: PianoProgressionSettings, key: String)?
+    private var isRestoringInstrumentProfile = true
     private let midiMappingStore: any MIDIMappingPersisting
     private let microphoneCalibrationStore: any MicrophoneCalibrationPersisting
     private let timingAlignmentStore: any TimingAlignmentPersisting
     private let practiceDataStore: any PracticeDataPersisting
+    private let userPreferences: UserDefaults
     private let practiceAudioStore: PracticeAudioFileStore
     private let practiceAudioRecorder: PracticeAudioRecorder
     private var simulationTask: Task<Void, Never>?
@@ -119,11 +116,21 @@ final class AppState: ObservableObject {
     private var earliestPracticeTickHostTime: UInt64 = 0
     private var metronomeStallRecoveryAttempts = 0
     private var activeAudioFlowGeneration = 0
-    private var practiceRecording: PracticeSessionRecording?
-    private var activePracticeSessionID: UUID?
+    // Compatibility bridge while drum scheduling stays in AppState.
+    private var practiceRecording: PracticeSessionRecording? {
+        get { practiceSession.recording }
+        set { practiceSession.recording = newValue }
+    }
+    private var activePracticeSessionID: UUID? {
+        get { practiceSession.sessionID }
+        set { practiceSession.sessionID = newValue }
+    }
     private var isPracticeAudioScheduled = false
     private var activePracticeRecordingCaptureDeviceID: AudioDeviceID?
-    private var pendingPracticeBounds: (startSessionTime: Int64, endSessionTime: Int64)?
+    private var pendingPracticeBounds: (startSessionTime: Int64, endSessionTime: Int64)? {
+        get { practiceSession.pendingBounds }
+        set { practiceSession.pendingBounds = newValue }
+    }
     private var hasStartedHardwareMonitoring = false
     private var midiMapping: [UInt8: DrumVoice] = [:]
     private var calibrationNoiseSamples: [Double] = []
@@ -139,17 +146,19 @@ final class AppState: ObservableObject {
         onDevicesChanged: { [weak self] devices in
             Task { @MainActor [weak self] in
                 self?.midiDevices = devices
+                self?.restoreInstrumentDevicesIfAvailable()
             }
         },
-        onNoteOn: { [weak self] note, endpointName in
-            Task { @MainActor [weak self] in
-                await self?.publishMIDI(note, endpointName: endpointName)
-            }
-        },
+        onNoteOn: { _, _ in },
         onStatusChanged: { [weak self] status in
             Task { @MainActor [weak self] in
                 self?.midiStatus = status
+                if case .disconnected = status { self?.piano.inputDisconnected() }
+                if case .error = status, self?.selectedInstrument == .electricPiano { self?.piano.inputDisconnected() }
             }
+        },
+        onMessages: { [weak self] batch in
+            Task { @MainActor [weak self] in await self?.handleMIDIBatch(batch) }
         }
     )
 
@@ -160,6 +169,7 @@ final class AppState: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.audioDevices = devices
+                self.restoreInstrumentDevicesIfAvailable()
                 self.configurePracticeAudioInputCapture()
             }
         },
@@ -175,6 +185,7 @@ final class AppState: ObservableObject {
         },
         onLevel: { [weak self] level in
             Task { @MainActor [weak self] in
+                guard self?.selectedInstrument == .drums else { return }
                 self?.appendMicrophoneLevel(level)
             }
         },
@@ -198,6 +209,10 @@ final class AppState: ObservableObject {
     private lazy var metronomeEngine: any MetronomeControlling = injectedMetronomeEngine
         ?? makeMetronomeEngine(generation: metronomeEngineGeneration)
 
+    @Published private(set) var selectedInstrument: InstrumentKind = .drums
+    @Published private(set) var instrumentProfiles = InstrumentProfile.defaults
+    @Published private(set) var instrumentStatusMessage: String?
+    @Published private(set) var instrumentProfileSaveError: String?
     @Published var events: [PerformanceEvent] = []
     @Published var recentLevels: [Double] = Array(repeating: 0, count: 80)
     @Published var droppedEventCount = 0
@@ -219,7 +234,10 @@ final class AppState: ObservableObject {
     @Published var metronomeSchedulingHealth = MetronomeSchedulingHealth()
     @Published var isMetronomeRunning = false
     @Published var metronomeBPM = 120.0 {
-        didSet { metronomeEngine.updateBPM(metronomeBPM) }
+        didSet {
+            metronomeEngine.updateBPM(metronomeBPM)
+            updateActiveInstrumentProfile { $0.metronomeBPM = metronomeBPM }
+        }
     }
     @Published var metronomeSound: MetronomeSound = .cuttingElectronic {
         didSet {
@@ -339,38 +357,31 @@ final class AppState: ObservableObject {
     @Published var lastCeilingMessage: String?
     @Published var practiceDataStatusMessage: String?
     @Published var practiceAudioRecordingEnabled = false {
-        didSet {
-            UserDefaults.standard.set(
-                practiceAudioRecordingEnabled,
-                forKey: "DrumTrainer.practiceAudioRecording.enabled"
-            )
-            configurePracticeAudioInputCapture()
-        }
+        didSet { saveInstrumentRecordingPreferences(); if !isRestoringInstrumentProfile { configurePracticeAudioInputCapture() } }
     }
-    /// Nil follows the microphone used for kick detection. A UID selects a
-    /// separate input such as the Scarlett carrying the module's analog audio.
+    /// Piano uses an explicit audio input; drum mode can follow the kick microphone.
     @Published var practiceAudioInputUID: String? = nil {
-        didSet {
-            UserDefaults.standard.set(
-                practiceAudioInputUID,
-                forKey: "DrumTrainer.practiceAudioRecording.inputUID"
-            )
-            configurePracticeAudioInputCapture()
-        }
+        didSet { saveInstrumentRecordingPreferences(); if !isRestoringInstrumentProfile { configurePracticeAudioInputCapture() } }
     }
     @Published var practiceAudioChannelSelection: PracticeAudioChannelSelection = .input1 {
-        didSet {
-            UserDefaults.standard.set(
-                practiceAudioChannelSelection.rawValue,
-                forKey: "DrumTrainer.practiceAudioRecording.channelSelection"
-            )
-        }
+        didSet { saveInstrumentRecordingPreferences() }
     }
     @Published private(set) var practiceAudioInputStatus: AudioInputStatus = .stopped
     @Published private(set) var practiceAudioStatusMessage: String?
     @Published private(set) var practiceAudioLibraryRevision = 0
-    @Published var practiceBPM = 120.0
-    @Published var practiceMeasures = 4
+    @Published var practiceBPM = 120.0 {
+        didSet {
+            if selectedInstrument == .electricPiano, !isRestoringInstrumentProfile, oldValue != practiceBPM {
+                stopPianoAutoGo()
+                if piano.phase.isActive { piano.fail("Practice tempo changed; this attempt was discarded.") }
+                else { piano.cancel(clearInput: false) }
+            }
+            updateActiveInstrumentProfile { $0.practiceBPM = practiceBPM }
+        }
+    }
+    @Published var practiceMeasures = 4 {
+        didSet { updateActiveInstrumentProfile { $0.measures = practiceMeasures } }
+    }
     @Published var practiceAccentVelocityThreshold = 100 {
         didSet {
             UserDefaults.standard.set(
@@ -409,12 +420,20 @@ final class AppState: ObservableObject {
     @Published var practiceGhostContrastPoints = 18 {
         didSet { UserDefaults.standard.set(practiceGhostContrastPoints, forKey: "DrumTrainer.practice.ghostContrastPoints") }
     }
-    @Published var practiceAutoGoEnabled = false {
+    @Published var practiceAutoGoEnabled = true {
         didSet {
-            if !practiceAutoGoEnabled { cancelPracticeAutoGoCountdown() }
+            userPreferences.set(practiceAutoGoEnabled, forKey: "DrumTrainer.preferences.autoGo.enabled")
+            if !practiceAutoGoEnabled { cancelPracticeAutoGoCountdown(); stopPianoAutoGo() }
         }
     }
-    @Published var practiceAutoGoDelaySeconds = 8.0
+    @Published var practiceAutoGoDelaySeconds = 7.0 {
+        didSet {
+            let normalized = Self.normalizedAutoGoDelay(practiceAutoGoDelaySeconds)
+            if practiceAutoGoDelaySeconds != normalized { practiceAutoGoDelaySeconds = normalized }
+            userPreferences.set(practiceAutoGoDelaySeconds, forKey: "DrumTrainer.preferences.autoGo.delaySeconds")
+            stopPianoAutoGo()
+        }
+    }
     @Published private(set) var practiceAutoGoSecondsRemaining: Int?
     @Published var practicePhase: PracticePhase = .idle {
         didSet {
@@ -454,8 +473,10 @@ final class AppState: ObservableObject {
         practiceAudioDirectoryURL: URL? = nil,
         eventCapacity: Int = 500,
         metronomeEngine injectedMetronome: (any MetronomeControlling)? = nil,
-        externalPlaybackListener: (any ExternalPlaybackListening)? = nil
+        externalPlaybackListener: (any ExternalPlaybackListening)? = nil,
+        userPreferences: UserDefaults = .standard
     ) {
+        self.userPreferences = userPreferences
         self.clock = clock
         self.injectedMetronomeEngine = injectedMetronome
         self.externalPlaybackListener = externalPlaybackListener ?? ExternalPlaybackListener()
@@ -470,10 +491,14 @@ final class AppState: ObservableObject {
         self.practiceAudioRecorder = PracticeAudioRecorder(store: practiceAudioStore)
         let timeline = SessionTimeline(originHostTime: clock.currentHostTime(), converter: converter)
         self.timeline = timeline
+        self.piano = PianoPracticeController(clock: clock, timeline: timeline)
         self.eventStream = UnifiedEventStream(capacity: eventCapacity)
+        self.eventCapacity = eventCapacity
         timingAlignmentProfiles = timingAlignmentStore.loadProfiles()
         do {
-            let archive = try practiceDataStore.load()
+            let archive = try practiceDataStore.load().validatedAndMigrated()
+            instrumentProfiles = archive.instrumentProfiles
+            pianoLibrary = archive.piano
             savedCustomExercises = archive.customExercises.sorted {
                 $0.definition.displayName.localizedCaseInsensitiveCompare($1.definition.displayName) == .orderedAscending
             }
@@ -493,6 +518,14 @@ final class AppState: ObservableObject {
             practiceDataStatusMessage = error.localizedDescription
         }
         let defaults = UserDefaults.standard
+        if userPreferences.object(forKey: "DrumTrainer.preferences.autoGo.enabled") != nil {
+            practiceAutoGoEnabled = userPreferences.bool(forKey: "DrumTrainer.preferences.autoGo.enabled")
+        }
+        if userPreferences.object(forKey: "DrumTrainer.preferences.autoGo.delaySeconds") != nil {
+            practiceAutoGoDelaySeconds = Self.normalizedAutoGoDelay(
+                userPreferences.double(forKey: "DrumTrainer.preferences.autoGo.delaySeconds")
+            )
+        }
         if let rawSound = defaults.string(forKey: "DrumTrainer.metronome.sound"),
            let savedSound = MetronomeSound(rawValue: rawSound) {
             metronomeSound = savedSound
@@ -589,7 +622,154 @@ final class AppState: ObservableObject {
             enabled: metronomeLimiterEnabled,
             ceilingDBFS: metronomeLimiterCeilingDBFS
         )
+        if let rawInstrument = userPreferences.string(forKey: "DrumTrainer.preferences.instrument"),
+           let instrument = InstrumentKind(rawValue: rawInstrument) {
+            selectedInstrument = instrument
+        }
+        practiceSession.activate(selectedInstrument, at: 0)
+        if let index = instrumentProfiles.firstIndex(where: { $0.instrument == .drums }), instrumentProfiles[index].recording == nil {
+            instrumentProfiles[index].recording = currentInstrumentRecordingPreferences
+        }
+        applyActiveInstrumentProfile()
+        isRestoringInstrumentProfile = false
         updateKickMonitorAudioConfiguration()
+        piano.onStopAudio = { [weak self] in self?.metronomeEngine.stop() }
+        piano.onCancelled = { [weak self] in
+            self?.stopPianoAutoGo()
+            self?.discardActivePracticeAudio()
+        }
+        piano.onScheduled = { [weak self] id, start, end, pattern in
+            guard let self, self.selectedInstrument == .electricPiano else { return }
+            self.activePracticeSessionID = id
+            self.schedulePracticeAudio(sessionID: id, startHostTime: start, endHostTime: end)
+            if let beats = pattern.referenceBeats, !beats.isEmpty {
+                self.metronomeEngine.followTempoMap(startPresentationHostTime: start, referenceBeats: beats)
+            }
+        }
+        piano.onCompleted = { [weak self] id, outcome, events in self?.savePianoAttempt(id: id, outcome: outcome, events: events) }
+    }
+
+    var activeInstrumentProfile: InstrumentProfile {
+        instrumentProfiles.first { $0.instrument == selectedInstrument }
+            ?? InstrumentProfile(instrument: selectedInstrument)
+    }
+
+    func selectInstrument(_ instrument: InstrumentKind) {
+        guard instrument != selectedInstrument else { return }
+        // Keep the outgoing editor and section selection with its instrument profile.
+        instrumentProfiles = profilesForArchive()
+        selectedInstrument = instrument
+        piano.cancel()
+        stopPracticeAutoGo()
+        stopSimulation()
+        cancelMicrophoneCalibration()
+        resetPracticeTransport()
+        if hasStartedHardwareMonitoring {
+            midiInputService.select(deviceID: nil)
+            audioInputService.select(deviceID: nil)
+            practiceRecordingInputService.select(device: nil)
+        }
+        activePracticeRecordingCaptureDeviceID = nil
+        selectedMIDIInputID = nil
+        selectedAudioInputID = nil
+        selectedAudioOutputID = nil
+        lastMIDINote = nil
+        lastMIDIVelocity = nil
+        midiMappingVoice = .unknown
+        midiMapping = [:]
+        activeMicrophoneCalibrationProfile = nil
+        timingAlignmentPhase = .idle
+        microphoneCrosstalkGuard.reset()
+        recentLevels = Array(repeating: 0, count: 80)
+        events = []
+        droppedEventCount = 0
+        suppressedMicrophoneCrosstalkCount = 0
+        rejectedNonKickSoundCount = 0
+        lastKickSoundSimilarity = nil
+        // Replace the stream synchronously; in-flight appends belong to the old generation.
+        eventStream = UnifiedEventStream(capacity: eventCapacity)
+        practiceSession.activate(instrument, at: clock.currentHostTime())
+        userPreferences.set(instrument.rawValue, forKey: "DrumTrainer.preferences.instrument")
+        applyActiveInstrumentProfile()
+        updateKickMonitorAudioConfiguration()
+        instrumentStatusMessage = instrument.supportsPractice
+            ? "\(instrument.displayName) practice is ready."
+            : "Your \(instrument.displayName.lowercased()) setup is saved. Practice support is coming next."
+        persistPracticeData()
+    }
+
+    func updateActiveInstrumentProfile(_ update: (inout InstrumentProfile) -> Void) {
+        guard !isRestoringInstrumentProfile,
+              let index = instrumentProfiles.firstIndex(where: { $0.instrument == selectedInstrument }) else { return }
+        var profile = instrumentProfiles[index]
+        update(&profile)
+        guard profile.isValid else { return }
+        profile.updatedAt = Date()
+        instrumentProfiles[index] = profile
+        persistPracticeData()
+    }
+
+    private func applyActiveInstrumentProfile() {
+        let wasRestoring = isRestoringInstrumentProfile
+        isRestoringInstrumentProfile = true
+        let profile = activeInstrumentProfile
+        let recording = profile.recording ?? InstrumentRecordingPreferences()
+        practiceAudioRecordingEnabled = recording.enabled
+        practiceAudioInputUID = recording.inputUID
+        practiceAudioChannelSelection = recording.channels
+        if selectedInstrument == .electricPiano { timingAlignmentSource = .midi }
+        practiceBPM = profile.practiceBPM
+        metronomeBPM = profile.metronomeBPM
+        practiceMeasures = profile.measures
+        if selectedInstrument == .drums, let draft = profile.drumPractice {
+            practiceExerciseMode = draft.mode
+            practiceExercise = draft.exercise
+            practiceCustomMeasure = draft.customMeasure
+            selectedSavedCustomExerciseID = draft.savedCustomExerciseID
+            selectedImportedSongID = draft.importedSongID
+            importedSectionStartMeasure = draft.sectionStartMeasure
+            importedSectionEndMeasure = draft.sectionEndMeasure
+            importedSectionRepeats = draft.sectionRepeats
+        }
+        if profile.audioOutputUID == nil { metronomeEngine.select(deviceID: nil) }
+        restoreInstrumentDevicesIfAvailable()
+        isRestoringInstrumentProfile = wasRestoring
+        configurePracticeAudioInputCapture()
+    }
+
+    private func profilesForArchive() -> [InstrumentProfile] {
+        var profiles = instrumentProfiles
+        if selectedInstrument == .drums,
+           let index = profiles.firstIndex(where: { $0.instrument == .drums }) {
+            let draft = DrumPracticePreferences(
+                mode: practiceExerciseMode, exercise: practiceExercise, customMeasure: practiceCustomMeasure,
+                savedCustomExerciseID: selectedSavedCustomExerciseID, importedSongID: selectedImportedSongID,
+                sectionStartMeasure: importedSectionStartMeasure, sectionEndMeasure: importedSectionEndMeasure,
+                sectionRepeats: importedSectionRepeats
+            )
+            if profiles[index].drumPractice != draft {
+                profiles[index].drumPractice = draft
+                profiles[index].updatedAt = Date()
+            }
+        }
+        return profiles
+    }
+
+    private func restoreInstrumentDevicesIfAvailable() {
+        guard selectedInstrument.supportsPractice, hasStartedHardwareMonitoring else { return }
+        let wasRestoring = isRestoringInstrumentProfile
+        isRestoringInstrumentProfile = true
+        defer { isRestoringInstrumentProfile = wasRestoring }
+        let profile = activeInstrumentProfile
+        if let id = profile.midiInputID, midiDevices.contains(where: { $0.id == id }), selectedMIDIInputID != id {
+            selectMIDIInput(id)
+        }
+        if selectedInstrument == .drums, let uid = profile.audioInputUID, let device = audioDevices.first(where: { $0.uid == uid }), selectedAudioInputID != device.id {
+            selectAudioInput(device.id)
+        }
+        if let uid = profile.audioOutputUID, let device = audioOutputDevices.first(where: { $0.uid == uid }), selectedAudioOutputID != device.id {
+            selectAudioOutput(device.id)
+        }
     }
 
     private func makeMetronomeEngine(generation: Int) -> MetronomeEngine {
@@ -598,6 +778,7 @@ final class AppState: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self, self.metronomeEngineGeneration == generation else { return }
                     self.audioOutputDevices = devices
+                    self.restoreInstrumentDevicesIfAvailable()
                 }
             },
             onStatusChanged: { [weak self] status in
@@ -609,6 +790,8 @@ final class AppState: ObservableObject {
                     } else {
                         self.isMetronomeRunning = false
                     }
+                    if self.selectedInstrument == .electricPiano, self.piano.phase.isActive,
+                       case let .error(message) = status { self.piano.fail(message) }
                     self.handleTimingAlignmentMetronomeStatus(status)
                     self.handlePracticeMetronomeStatus(status)
                 }
@@ -663,7 +846,7 @@ final class AppState: ObservableObject {
         )
         replacement.select(deviceID: selectedAudioOutputID)
         replacement.updateKickMonitoring(
-            enabled: kickMonitorEnabled,
+            enabled: selectedInstrument == .drums && kickMonitorEnabled,
             sound: kickMonitorSound,
             gainDecibels: kickMonitorGainDecibels,
             velocitySensitive: kickMonitorVelocitySensitive,
@@ -684,6 +867,7 @@ final class AppState: ObservableObject {
     }
 
     func startPractice() {
+        guard selectedInstrument == .drums else { return }
         guard !practicePhase.isActive, !isRefreshingAudioEngine else { return }
         cancelPracticeAutoGoCountdown()
         let externalStart = practiceExerciseMode == .importedSong && waitForExternalPlayback
@@ -932,6 +1116,7 @@ final class AppState: ObservableObject {
     /// Restores an idle, startable practice transport even if an earlier Core Audio
     /// rebuild never delivered its completion callback.
     func resetPracticeTransport() {
+        piano.cancel()
         stopWaitingForPlayback()
         discardActivePracticeAudio()
         if timingAlignmentPhase.isActive { cancelTimingAlignment() }
@@ -979,6 +1164,14 @@ final class AppState: ObservableObject {
         if !visible { cancelPracticeAutoGoCountdown() }
     }
 
+    func stopPracticeAutoGo() {
+        cancelPracticeAutoGoCountdown()
+    }
+
+    private static func normalizedAutoGoDelay(_ seconds: Double) -> Double {
+        seconds.isFinite ? min(max(seconds.rounded(), 1), 30) : 7
+    }
+
     private func cancelPracticeAutoGoCountdown() {
         practiceAutoGoTask?.cancel()
         practiceAutoGoTask = nil
@@ -988,7 +1181,7 @@ final class AppState: ObservableObject {
     }
 
     private var canAutoGoFromResults: Bool {
-        guard practiceAutoGoEnabled, isPracticeViewVisible, practicePhase == .results,
+        guard selectedInstrument == .drums, practiceAutoGoEnabled, isPracticeViewVisible, practicePhase == .results,
               practiceOutcome != nil, !isRefreshingAudioEngine,
               !microphoneCalibrationPhase.isActive, !timingAlignmentPhase.locksConfiguration else { return false }
         // Find My Ceiling offers Done when the search finishes, rather than another round.
@@ -1000,8 +1193,7 @@ final class AppState: ObservableObject {
     private func schedulePracticeAutoGo() {
         cancelPracticeAutoGoCountdown()
         guard canAutoGoFromResults else { return }
-        let seconds = practiceAutoGoDelaySeconds.isFinite
-            ? min(max(practiceAutoGoDelaySeconds.rounded(), 1), 30) : 8
+        let seconds = Self.normalizedAutoGoDelay(practiceAutoGoDelaySeconds)
         let id = UUID()
         practiceAutoGoID = id
         practiceAutoGoDeadline = timeline.hostTime(
@@ -1294,11 +1486,12 @@ final class AppState: ObservableObject {
     }
 
     func clearPracticeHistory() {
+        let deletedIDs = Set(practiceHistory.map(\.id) + practiceSessionRecords.map(\.id))
         practiceHistory = []
         practiceSessionRecords = []
         var audioDeletionError: String?
         do {
-            try practiceAudioStore.deleteAllRecordings()
+            for id in deletedIDs { try practiceAudioStore.deleteRecording(for: id) }
             practiceAudioLibraryRevision &+= 1
         } catch {
             audioDeletionError = error.localizedDescription
@@ -1370,6 +1563,11 @@ final class AppState: ObservableObject {
             throw PracticeDataPersistenceError.invalidArchive("The import is larger than 250 MB.")
         }
         let imported = try PracticeDataArchive.decodeAndValidate(data)
+        let mergedPiano = try mergePianoArchive(imported.piano)
+        guard Set(mergedPiano.sessions.map(\.id)).isDisjoint(with: Set(practiceHistory.map(\.id) + imported.sessions.map(\.id) + imported.sessionRecords.map(\.id))) else {
+            throw PracticeDataPersistenceError.invalidArchive("Drum and piano sessions cannot share recording identifiers.")
+        }
+        stopPianoAutoGo()
 
         var exercisesByID = Dictionary(uniqueKeysWithValues: savedCustomExercises.map { ($0.id, $0) })
         for exercise in imported.customExercises {
@@ -1403,6 +1601,13 @@ final class AppState: ObservableObject {
             ceilingsByID[ceiling.id] = ceiling
         }
 
+        for profile in imported.instrumentProfiles where profile.instrument != selectedInstrument {
+            if let index = instrumentProfiles.firstIndex(where: { $0.instrument == profile.instrument }),
+               profile.updatedAt > instrumentProfiles[index].updatedAt {
+                instrumentProfiles[index] = profile
+            }
+        }
+        pianoLibrary = mergedPiano
         savedCustomExercises = Array(exercisesByID.values)
         sortSavedCustomExercises()
         importedSongs = Array(songsByID.values)
@@ -1418,7 +1623,7 @@ final class AppState: ObservableObject {
                 || importedRun.updatedAt > (activeCeilingRun?.updatedAt ?? .distantPast) {
             activeCeilingRun = importedRun
         }
-        practiceDataStatusMessage = "Imported \(imported.sessions.count) sessions, \(imported.customExercises.count) custom exercises, and \(imported.importedSongs.count) songs."
+        practiceDataStatusMessage = "Imported \(imported.sessions.count + imported.piano.sessions.count) sessions, \(imported.customExercises.count) custom exercises, and \(imported.importedSongs.count) songs."
         persistPracticeData()
     }
 
@@ -1465,6 +1670,7 @@ final class AppState: ObservableObject {
     }
 
     func startMicrophoneCalibration() {
+        guard selectedInstrument == .drums else { return }
         cancelPracticeAutoGoCountdown()
         if timingAlignmentPhase.isActive { cancelTimingAlignment() }
         guard let selectedAudioInputID,
@@ -1631,12 +1837,15 @@ final class AppState: ObservableObject {
     }
 
     func selectTimingAlignmentSource(_ source: TimingAlignmentSource) {
+        guard selectedInstrument == .drums || source == .midi else { return }
         guard !timingAlignmentPhase.locksConfiguration else { return }
         timingAlignmentSource = source
         timingAlignmentPhase = .idle
     }
 
     func startTimingAlignment() {
+        guard selectedInstrument.supportsPractice, !piano.phase.isActive,
+              selectedInstrument == .drums || timingAlignmentSource == .midi else { return }
         cancelPracticeAutoGoCountdown()
         guard !isRefreshingAudioEngine else { return }
         guard !practicePhase.isActive, !microphoneCalibrationPhase.isActive else {
@@ -1646,7 +1855,7 @@ final class AppState: ObservableObject {
         guard currentTimingAlignmentIdentity(for: timingAlignmentSource) != nil else {
             timingAlignmentPhase = .error(
                 timingAlignmentSource == .midi
-                    ? "Choose an e-kit MIDI input first."
+                    ? "Choose a MIDI input first."
                     : "Choose a microphone input first."
             )
             return
@@ -1752,7 +1961,8 @@ final class AppState: ObservableObject {
                 audioStatus = .ready
             }
         }
-        ensureSelectedAudioInputIsMonitoring()
+        restoreInstrumentDevicesIfAvailable()
+        if selectedInstrument == .drums { ensureSelectedAudioInputIsMonitoring() }
         configurePracticeAudioInputCapture()
     }
 
@@ -1775,6 +1985,8 @@ final class AppState: ObservableObject {
     }
 
     func selectMIDIInput(_ deviceID: MIDIUniqueID?) {
+        guard selectedInstrument.supportsPractice else { return }
+        if selectedInstrument == .electricPiano { piano.inputDisconnected() }
         if timingAlignmentPhase.isActive { cancelTimingAlignment() }
         if deviceID != nil { stopSimulation() }
         microphoneCrosstalkGuard.reset()
@@ -1784,6 +1996,7 @@ final class AppState: ObservableObject {
         lastMIDIVelocity = nil
         midiMappingVoice = .unknown
         midiInputService.select(deviceID: deviceID)
+        updateActiveInstrumentProfile { $0.midiInputID = deviceID }
     }
 
     func refreshMIDIInputs() {
@@ -1815,6 +2028,7 @@ final class AppState: ObservableObject {
     }
 
     func selectAudioInput(_ deviceID: AudioDeviceID?) {
+        guard selectedInstrument == .drums else { return }
         if microphoneCalibrationPhase.isActive { cancelMicrophoneCalibration() }
         if timingAlignmentPhase.isActive { cancelTimingAlignment() }
         if deviceID != nil { stopSimulation() }
@@ -1832,6 +2046,9 @@ final class AppState: ObservableObject {
             activeMicrophoneCalibrationProfile = nil
         }
         audioInputService.select(deviceID: deviceID)
+        updateActiveInstrumentProfile { profile in
+            profile.audioInputUID = audioDevices.first { $0.id == deviceID }?.uid
+        }
         configurePracticeAudioInputCapture()
     }
 
@@ -1840,12 +2057,16 @@ final class AppState: ObservableObject {
     }
 
     func selectAudioOutput(_ deviceID: AudioDeviceID?) {
+        if piano.phase.isActive { piano.fail("Audio output changed; this attempt was discarded.") }
         if timingAlignmentPhase.isActive { cancelTimingAlignment() }
         if isExternalPlaybackRun, practicePhase.isActive {
             markExternalPlaybackSyncLost()
         }
         selectedAudioOutputID = deviceID
         metronomeEngine.select(deviceID: deviceID)
+        updateActiveInstrumentProfile { profile in
+            profile.audioOutputUID = audioOutputDevices.first { $0.id == deviceID }?.uid
+        }
     }
 
     func refreshAudioEngine(retryActiveFlow: Bool = true) {
@@ -1856,6 +2077,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshAudioEngineAndRetryPractice() {
+        guard selectedInstrument == .drums else { return }
         guard !isRefreshingAudioEngine else { return }
         if !practicePhase.isActive {
             practicePhase = .countIn(beatsRemaining: Self.countInBeats)
@@ -1872,6 +2094,7 @@ final class AppState: ObservableObject {
         retryActiveFlow: Bool,
         preserveAutomaticRecoveryAttempt: Bool
     ) {
+        if piano.phase.isActive { piano.fail("Audio output was refreshed; this attempt was discarded.") }
         guard !isRefreshingAudioEngine else { return }
         stopWaitingForPlayback()
         let retryPractice = retryActiveFlow && practicePhase.isActive
@@ -1982,6 +2205,7 @@ final class AppState: ObservableObject {
     }
 
     func toggleMetronome() {
+        if piano.phase.isActive { piano.cancel(); return }
         if timingAlignmentPhase.isActive {
             cancelTimingAlignment()
             return
@@ -1999,7 +2223,7 @@ final class AppState: ObservableObject {
     }
 
     func testKickMonitor() {
-        guard kickMonitorEnabled else { return }
+        guard selectedInstrument == .drums, kickMonitorEnabled else { return }
         metronomeEngine.triggerKick(
             velocity: 1,
             eventHostTime: clock.currentHostTime(),
@@ -2009,7 +2233,7 @@ final class AppState: ObservableObject {
 
     private func updateKickMonitorAudioConfiguration() {
         metronomeEngine.updateKickMonitoring(
-            enabled: kickMonitorEnabled,
+            enabled: selectedInstrument == .drums && kickMonitorEnabled,
             sound: kickMonitorSound,
             gainDecibels: kickMonitorGainDecibels,
             velocitySensitive: kickMonitorVelocitySensitive,
@@ -2024,13 +2248,17 @@ final class AppState: ObservableObject {
         rejectedNonKickSoundCount = 0
         lastKickSoundSimilarity = nil
         microphoneCrosstalkGuard.reset()
+        let generation = practiceSession.generation
+        let stream = eventStream
         Task {
-            let snapshot = await eventStream.clear()
+            let snapshot = await stream.clear()
+            guard practiceSession.generation == generation else { return }
             droppedEventCount = snapshot.droppedCount
         }
     }
 
     private func startSimulation() {
+        guard selectedInstrument == .drums else { return }
         guard simulationTask == nil else { return }
         if practicePhase.isActive { cancelPractice() }
         if isMetronomeRunning { metronomeEngine.stop() }
@@ -2102,6 +2330,8 @@ final class AppState: ObservableObject {
     }
 
     private func publish(_ event: PerformanceEvent) async {
+        guard practiceSession.accepts(event) else { return }
+        let generation = practiceSession.generation
         if isCollectingCalibration {
             collectCalibrationHitIfNeeded(event)
         } else if shouldSuppressAsNonKickSound(event) {
@@ -2118,6 +2348,7 @@ final class AppState: ObservableObject {
         monitorKickIfNeeded(event)
         recordPracticeEvent(event)
         let snapshot = await eventStream.append(event)
+        guard practiceSession.generation == generation else { return }
         events = snapshot.events
         droppedEventCount = snapshot.droppedCount
     }
@@ -2125,6 +2356,7 @@ final class AppState: ObservableObject {
     /// Accepts normalized player events, including the short pre-roll needed
     /// while external audio onset confirmation is still in flight.
     func recordPracticeEvent(_ event: PerformanceEvent) {
+        guard practiceSession.accepts(event) else { return }
         if case .waitingForPlayback = practicePhase, event.source != .metronome {
             playbackPreRoll.append(event)
             if playbackPreRoll.count > 512 {
@@ -2132,7 +2364,7 @@ final class AppState: ObservableObject {
                 latestDroppedPlaybackEventTime = max(latestDroppedPlaybackEventTime ?? Int64.min, removed.sessionTimeNanoseconds)
             }
         }
-        practiceRecording?.record(event)
+        practiceSession.record(event)
         practiceRecordedHitCount = practiceRecording?.scoredActualEventCount ?? practiceRecordedHitCount
     }
 
@@ -2156,6 +2388,8 @@ final class AppState: ObservableObject {
     }
 
     private func publishMicrophoneEvent(_ event: PerformanceEvent) async {
+        guard practiceSession.accepts(event) else { return }
+        let generation = practiceSession.generation
         collectTimingAlignmentEvent(event)
         if midiCrosstalkSuppressionEnabled {
             let graceMilliseconds = microphoneCrosstalkGuard.configuration.midiArrivalGraceMilliseconds
@@ -2165,11 +2399,88 @@ final class AppState: ObservableObject {
                 return
             }
         }
+        guard practiceSession.generation == generation else { return }
         await publish(event)
     }
 
+    var pianoPreferences: PianoPracticePreferences { activeInstrumentProfile.pianoPractice ?? PianoPracticePreferences() }
+
+    func updatePianoPreferences(_ update: (inout PianoPracticePreferences) -> Void) {
+        guard selectedInstrument == .electricPiano, !piano.phase.isActive else { return }
+        var preferences = pianoPreferences
+        update(&preferences)
+        guard preferences.isValid else { return }
+        if preferences != pianoPreferences { piano.cancel(clearInput: false); stopPianoAutoGo() }
+        if preferences.channel != pianoPreferences.channel { piano.resetKeys() }
+        updateActiveInstrumentProfile { $0.pianoPractice = preferences }
+    }
+
+    func startPianoPractice() {
+        guard selectedInstrument == .electricPiano, !isRefreshingAudioEngine,
+              !timingAlignmentPhase.locksConfiguration else { return }
+        guard selectedMIDIInputID != nil, case .connected = midiStatus else {
+            piano.fail("Choose a connected MIDI piano in Live Monitor before starting.")
+            return
+        }
+        var configuration = PianoScoringConfiguration()
+        configuration.gradeDuration = pianoPreferences.gradeDuration
+        let correction = currentTimingAlignmentProfile(for: .midi)?.compensationMilliseconds ?? 0
+        configuration.timingCompensationNanoseconds = correction.isFinite
+            ? Int64(min(max(correction, -1_000), 1_000) * 1_000_000) : 0
+        activeAudioFlowGeneration &+= 1
+        do {
+            let pattern = try selectedPianoPattern()
+            let key = pianoProgressionKey(pattern: pattern, configuration: configuration)
+            let settings = pianoPreferences.progression ?? PianoProgressionSettings()
+            piano.start(preferences: pianoPreferences, bpm: practiceBPM, configuration: configuration, pattern: pattern)
+            guard piano.phase.isActive else { return }
+            pianoAttemptContext = (currentPracticeDeviceContext, currentInstrumentRecordingPreferences, settings, key)
+            if settings.ceiling {
+                if pianoLibrary.ceiling?.key != key || pianoLibrary.ceiling?.stepBPM != settings.stepBPM || pianoCeilingFinished {
+                    pianoLibrary.ceiling = PianoCeilingRun(key: key, name: pattern.displayName, stepBPM: settings.stepBPM, phase: .testing(bpm: practiceBPM))
+                } else { pianoLibrary.ceiling?.phase = .testing(bpm: practiceBPM) }
+                persistPracticeData()
+            }
+            metronomeEngine.start(bpm: practiceBPM)
+        } catch { piano.fail(error.localizedDescription) }
+    }
+
+    func handleMIDIBatch(_ batch: MIDIMessageBatch) async {
+        guard batch.connectionGeneration == midiInputService.connectionGeneration,
+              selectedMIDIInputID == batch.endpointID else { return }
+        let generation = practiceSession.generation
+        let arrivalHostTime = batch.receivedHostTime == 0 ? clock.currentHostTime() : batch.receivedHostTime
+        if selectedInstrument == .electricPiano {
+            let events = batch.events.map { message in
+                let hostTime = message.hostTime == 0 ? arrivalHostTime : message.hostTime
+                return PianoInputEvent(message: message, endpointID: batch.endpointID,
+                    sessionTimeNanoseconds: timeline.sessionTimeNanoseconds(for: hostTime), effectiveHostTime: hostTime)
+            }.filter { $0.effectiveHostTime >= practiceSession.minimumHostTime }
+            piano.receive(events, droppedCount: batch.droppedCount, channel: pianoPreferences.channel)
+            for event in events {
+                if case let .noteOn(note, velocity) = event.message.payload,
+                   pianoPreferences.channel.map({ $0 == event.message.channel }) ?? true {
+                    collectTimingAlignmentEvent(timeline.makeEvent(source: .midi, voice: .unknown,
+                        hostTime: event.effectiveHostTime, velocity: Double(velocity) / 127,
+                        metadata: .midi(channel: event.message.channel, note: note, velocity: velocity, endpointName: batch.endpointName)))
+                }
+            }
+        } else if selectedInstrument == .drums {
+            for event in batch.events {
+                guard practiceSession.generation == generation,
+                      batch.connectionGeneration == midiInputService.connectionGeneration else { return }
+                if case let .noteOn(note, velocity) = event.payload {
+                    await publishMIDI(MIDINoteOn(channel: event.channel, note: note, velocity: velocity,
+                        hostTime: event.hostTime == 0 ? arrivalHostTime : event.hostTime), endpointName: batch.endpointName)
+                }
+            }
+        }
+    }
+
     private func publishMIDI(_ note: MIDINoteOn, endpointName: String) async {
+        guard selectedInstrument == .drums else { return }
         let hostTime = note.hostTime == 0 ? clock.currentHostTime() : note.hostTime
+        guard hostTime >= practiceSession.minimumHostTime else { return }
         let voice = MIDINoteMapper(overrides: midiMapping).voice(for: note.note)
         lastMIDINote = note.note
         lastMIDIVelocity = note.velocity
@@ -2195,6 +2506,13 @@ final class AppState: ObservableObject {
     }
 
     private func publishMetronomeTick(_ tick: MetronomeTick) async {
+        guard selectedInstrument.supportsPractice, tick.hostTime >= practiceSession.minimumHostTime else { return }
+        if selectedInstrument == .electricPiano {
+            piano.handleTick(tick)
+            recordMetronomeHeartbeat()
+            handleTimingAlignmentTick(tick)
+            return
+        }
         let flowGeneration = activeAudioFlowGeneration
         let event = timeline.makeEvent(
             source: .metronome,
@@ -2432,7 +2750,7 @@ final class AppState: ObservableObject {
               measurement.sampleCount >= 8 else {
             timingAlignmentPhase = .error(
                 timingAlignmentSource == .midi
-                    ? "Not enough MIDI hits were detected. Play one e-kit pad once on each click, then retry."
+                    ? "Not enough MIDI notes were detected. Play one key or pad once on each click, then retry."
                     : "Not enough kick hits were detected. Play the kick once on each click, then retry."
             )
             return
@@ -2460,6 +2778,7 @@ final class AppState: ObservableObject {
     }
 
     func handlePracticeTick(_ tick: MetronomeTick) {
+        guard selectedInstrument == .drums, tick.hostTime >= practiceSession.minimumHostTime else { return }
         guard !isRefreshingAudioEngine, tick.hostTime >= earliestPracticeTickHostTime,
               case let .countIn(beatsRemaining) = practicePhase else { return }
         if let pendingPracticeBounds {
@@ -2601,6 +2920,10 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 practiceAudioLibraryRevision &+= 1
                 if let asset {
+                    guard practiceHistory.contains(where: { $0.id == asset.sessionID }) || pianoLibrary.sessions.contains(where: { $0.id == asset.sessionID }) else {
+                        try? practiceAudioStore.deleteRecording(for: asset.sessionID)
+                        return
+                    }
                     practiceAudioStatusMessage = "Saved practice audio (\(ByteCountFormatter.string(fromByteCount: asset.fileSizeBytes, countStyle: .file)))."
                 } else if let error {
                     practiceAudioStatusMessage = "Practice was saved without audio: \(error)"
@@ -2618,6 +2941,7 @@ final class AppState: ObservableObject {
     }
 
     func finishPractice() {
+        guard selectedInstrument == .drums else { return }
         cancelMetronomeHeartbeat()
         guard practicePhase.isActive, let practiceRecording else { return }
         practiceFinishTask?.cancel()
@@ -2908,13 +3232,17 @@ final class AppState: ObservableObject {
     private func persistPracticeData() {
         do {
             try practiceDataStore.save(currentPracticeDataArchive())
+            instrumentProfileSaveError = nil
         } catch {
             practiceDataStatusMessage = error.localizedDescription
+            instrumentProfileSaveError = "Setup could not be saved: \(error.localizedDescription)"
         }
     }
 
     private func currentPracticeDataArchive() -> PracticeDataArchive {
         PracticeDataArchive(
+            instrumentProfiles: profilesForArchive(),
+            piano: pianoLibrary,
             customExercises: savedCustomExercises,
             importedSongs: importedSongs,
             sessions: practiceHistory,
@@ -3269,7 +3597,7 @@ final class AppState: ObservableObject {
 
     private func configurePracticeAudioInputCapture() {
         guard hasStartedHardwareMonitoring else { return }
-        guard practiceAudioRecordingEnabled else {
+        guard selectedInstrument.supportsPractice, practiceAudioRecordingEnabled else {
             if activePracticeRecordingCaptureDeviceID != nil {
                 activePracticeRecordingCaptureDeviceID = nil
                 practiceRecordingInputService.select(device: nil)
@@ -3319,7 +3647,7 @@ final class AppState: ObservableObject {
         case .midi:
             guard let selectedMIDIInputID,
                   let device = midiDevices.first(where: { $0.id == selectedMIDIInputID }) else { return nil }
-            inputID = String(device.id)
+            inputID = selectedInstrument == .electricPiano ? "electricPiano:\(device.id)" : String(device.id)
             inputName = device.name
         case .microphone:
             guard let device = selectedAudioInputDevice else { return nil }
@@ -3389,5 +3717,245 @@ final class AppState: ObservableObject {
               let similarity = kickSoundSimilarity(for: event) else { return false }
         lastKickSoundSimilarity = similarity
         return similarity < minimumKickSoundSimilarity
+    }
+}
+
+// Piano library and progress use their own evidence and keys inside the shared backup.
+extension AppState {
+    var currentInstrumentRecordingPreferences: InstrumentRecordingPreferences {
+        InstrumentRecordingPreferences(enabled: practiceAudioRecordingEnabled, inputUID: practiceAudioInputUID, channels: practiceAudioChannelSelection)
+    }
+
+    private func saveInstrumentRecordingPreferences() {
+        guard !isRestoringInstrumentProfile else { return }
+        if selectedInstrument == .drums {
+            UserDefaults.standard.set(practiceAudioRecordingEnabled, forKey: "DrumTrainer.practiceAudioRecording.enabled")
+            UserDefaults.standard.set(practiceAudioInputUID, forKey: "DrumTrainer.practiceAudioRecording.inputUID")
+            UserDefaults.standard.set(practiceAudioChannelSelection.rawValue, forKey: "DrumTrainer.practiceAudioRecording.channelSelection")
+        }
+        if piano.phase.isActive { piano.fail("Recording setup changed; this attempt was discarded.") }
+        updateActiveInstrumentProfile { $0.recording = currentInstrumentRecordingPreferences }
+    }
+
+    func selectedPianoPattern() throws -> PianoPracticePattern {
+        let p = pianoPreferences
+        switch p.effectiveMode {
+        case .builtIn: return .make(exercise: p.exercise, bpm: practiceBPM, repeats: p.repeats)
+        case .custom: return try (p.draft ?? PianoExerciseDefinition()).pattern(bpm: practiceBPM, repeats: p.repeats)
+        case .imported:
+            guard let song = pianoLibrary.songs.first(where: { $0.id == p.importedSongID }) else { throw PianoWorkflowError.invalid("Import and select a MIDI song first.") }
+            return try song.pattern(bpm: practiceBPM, start: p.sectionStart ?? 1, end: p.sectionEnd ?? 1, repeats: p.repeats, transpose: p.transposition ?? 0)
+        }
+    }
+
+    func savePianoExercise(asNew: Bool = false) {
+        let draft = pianoPreferences.draft ?? PianoExerciseDefinition()
+        guard draft.isPlayable else { pianoWorkflowMessage = "Add at least one note before saving."; return }
+        var id: UUID
+        if !asNew, let index = pianoLibrary.exercises.firstIndex(where: { $0.id == pianoPreferences.customExerciseID }) {
+            pianoLibrary.exercises[index].definition = draft
+            pianoLibrary.exercises[index].updatedAt = Date()
+            id = pianoLibrary.exercises[index].id
+        } else {
+            guard pianoLibrary.exercises.count < 1_000 else { pianoWorkflowMessage = "The piano library is full."; return }
+            let exercise = PianoSavedExercise(definition: draft)
+            pianoLibrary.exercises.append(exercise); id = exercise.id
+        }
+        updatePianoPreferences { $0.customExerciseID = id }
+        pianoWorkflowMessage = "Saved piano exercise. Sequence measures are independent copies."
+        persistPracticeData()
+    }
+
+    func loadPianoExercise(_ id: UUID) {
+        guard let saved = pianoLibrary.exercises.first(where: { $0.id == id }) else { return }
+        updatePianoPreferences { $0.draft = saved.definition; $0.customExerciseID = id; $0.mode = .custom }
+    }
+
+    func deletePianoExercise(_ id: UUID) {
+        guard !piano.phase.isActive else { return }
+        pianoLibrary.exercises.removeAll { $0.id == id }
+        if pianoPreferences.customExerciseID == id { updatePianoPreferences { $0.customExerciseID = nil } }
+        persistPracticeData()
+    }
+
+    func importPianoMIDI(_ data: Data, filename: String) throws {
+        guard !piano.phase.isActive, pianoLibrary.songs.count < 500 else { throw PianoWorkflowError.invalid("Stop practice before importing, or remove a song from the full library.") }
+        let source = try StandardMIDIFileParser().parse(data: data, filename: filename)
+        let song = PianoImportedSong(source: source)
+        guard song.isValid else { throw PianoWorkflowError.invalid("This MIDI file exceeds the supported pitch, meter, or event limits.") }
+        pianoLibrary.songs.append(song)
+        updatePianoPreferences { $0.mode = .imported; $0.importedSongID = song.id; $0.sectionStart = 1; $0.sectionEnd = min(song.measures.count, 4); $0.transposition = 0 }
+        pianoWorkflowMessage = "Imported piano parts with releases, sustain controllers, and tempo changes."
+        persistPracticeData()
+    }
+
+    func selectPianoSong(_ id: UUID) {
+        guard let song = pianoLibrary.songs.first(where: { $0.id == id }) else { return }
+        updatePianoPreferences { $0.importedSongID = id; $0.sectionStart = 1; $0.sectionEnd = min(song.measures.count, 4) }
+    }
+
+    func updatePianoSong(_ id: UUID, update: (inout PianoImportedSong) -> Void) {
+        guard !piano.phase.isActive, let index = pianoLibrary.songs.firstIndex(where: { $0.id == id }) else { return }
+        var song = pianoLibrary.songs[index]; update(&song)
+        guard song.isValid else { return }
+        song.updatedAt = Date(); pianoLibrary.songs[index] = song
+        piano.cancel(clearInput: false)
+        persistPracticeData()
+    }
+
+    func deletePianoSong(_ id: UUID) {
+        guard !piano.phase.isActive else { return }
+        pianoLibrary.songs.removeAll { $0.id == id }
+        if pianoPreferences.importedSongID == id { updatePianoPreferences { $0.importedSongID = nil } }
+        persistPracticeData()
+    }
+
+    private func pianoProgressionKey(pattern: PianoPracticePattern, configuration: PianoScoringConfiguration) -> String {
+        let source = pattern.sourceKey ?? "builtIn:\(pattern.exercise.rawValue):\(pianoPreferences.repeats)"
+        return InstrumentKind.electricPiano.progressionKey(for: "\(source):duration=\(configuration.gradeDuration):onset=\(configuration.onsetToleranceNanoseconds):release=\(configuration.durationToleranceNanoseconds):chord=\(configuration.chordSpreadToleranceNanoseconds)")
+    }
+
+    private func savePianoAttempt(id: UUID, outcome: PianoPracticeOutcome, events: [PianoInputEvent]) {
+        guard selectedInstrument == .electricPiano, !pianoLibrary.sessions.contains(where: { $0.id == id }), let context = pianoAttemptContext else { return }
+        let record = PianoSessionRecord(id: id, outcome: outcome, rawEvents: events, devices: context.devices,
+            recording: context.recording, progressionKey: context.key)
+        guard record.isValid else { discardActivePracticeAudio(); pianoWorkflowMessage = "The result exceeded supported evidence limits and could not be saved."; return }
+        pianoLibrary.sessions.insert(record, at: 0)
+        if pianoLibrary.sessions.count > 2_000 {
+            let removed = pianoLibrary.sessions.removeLast()
+            try? practiceAudioStore.deleteRecording(for: removed.id)
+            pianoLibrary.ceiling?.sessionIDs.removeAll { $0 == removed.id }
+        }
+        updatePianoProgress(after: record, settings: context.settings)
+        pianoWorkflowMessage = outcome.isClean ? "Saved a clean piano run." : "Saved piano results."
+        persistPracticeData()
+        finishActivePracticeAudio()
+        schedulePianoAutoGo(outcome: outcome)
+    }
+
+    private func updatePianoProgress(after record: PianoSessionRecord, settings: PianoProgressionSettings) {
+        let outcome = record.outcome, bpm = outcome.pattern.bpm
+        var tempo = pianoLibrary.tempos.first(where: { $0.id == record.progressionKey })
+            ?? PianoTempoRecord(id: record.progressionKey, name: outcome.pattern.displayName, lastBPM: bpm)
+        if outcome.isClean {
+            tempo.highestCleanBPM = max(tempo.highestCleanBPM ?? bpm, bpm)
+            tempo.streak = tempo.lastBPM == bpm ? min(tempo.streak + 1, 10) : 1
+        } else { tempo.streak = 0 }
+        tempo.lastBPM = bpm; tempo.updatedAt = record.completedAt
+        pianoLibrary.tempos.removeAll { $0.id == tempo.id }; pianoLibrary.tempos.insert(tempo, at: 0)
+        if pianoLibrary.tempos.count > 2_000 { pianoLibrary.tempos.removeLast() }
+        if settings.ceiling, var run = pianoLibrary.ceiling, run.key == record.progressionKey {
+            if !outcome.isVerified {
+                pianoWorkflowMessage = "Input or reference was unverified. Retry this tempo; no ceiling was awarded."
+                return
+            }
+            run.sessionIDs.append(record.id)
+            if run.sessionIDs.count > 200 { run.sessionIDs.removeFirst() }
+            run.updatedAt = record.completedAt
+            if outcome.isClean {
+                run.highestCleanBPM = max(run.highestCleanBPM ?? bpm, bpm)
+                if bpm < 240 { let next = min(bpm + run.stepBPM, 240); run.phase = .readyForNext(bpm: next); setPianoTempoAfterResults(next) }
+                else { run.phase = .found(highestCleanBPM: 240, failedBPM: nil) }
+            } else { run.phase = .found(highestCleanBPM: run.highestCleanBPM, failedBPM: bpm) }
+            pianoLibrary.ceiling = run
+        } else if settings.advance, outcome.isClean, tempo.streak >= settings.cleanRuns {
+            setPianoTempoAfterResults(min(bpm + settings.stepBPM, 240))
+            if let index = pianoLibrary.tempos.firstIndex(where: { $0.id == tempo.id }) { pianoLibrary.tempos[index].streak = 0 }
+        }
+    }
+
+    private func setPianoTempoAfterResults(_ bpm: Double) {
+        let restoring = isRestoringInstrumentProfile
+        isRestoringInstrumentProfile = true; practiceBPM = bpm; isRestoringInstrumentProfile = restoring
+        updateActiveInstrumentProfile { $0.practiceBPM = bpm }
+    }
+
+    var pianoCeilingFinished: Bool {
+        guard let run = pianoLibrary.ceiling else { return false }
+        if case .found = run.phase { return true }; return false
+    }
+
+    func resetPianoCeiling() { stopPianoAutoGo(); pianoLibrary.ceiling = nil; persistPracticeData() }
+
+    func updatePianoProgression(_ update: (inout PianoProgressionSettings) -> Void) {
+        updatePianoPreferences { p in var settings = p.progression ?? PianoProgressionSettings(); update(&settings); p.progression = settings }
+        pianoLibrary.ceiling = nil; persistPracticeData()
+    }
+
+    func setPianoPracticeVisible(_ visible: Bool) { pianoPracticeVisible = visible; if !visible { stopPianoAutoGo() } }
+
+    private func schedulePianoAutoGo(outcome: PianoPracticeOutcome) {
+        stopPianoAutoGo()
+        guard practiceAutoGoEnabled, pianoPracticeVisible, outcome.isVerified,
+              !(pianoPreferences.progression?.ceiling == true && pianoCeilingFinished) else { return }
+        let delay = UInt64(Self.normalizedAutoGoDelay(practiceAutoGoDelaySeconds) * 1_000_000_000)
+        pianoAutoGoDeadline = timeline.hostTime(addingNanoseconds: delay, to: clock.currentHostTime())
+        pianoAutoGoSecondsRemaining = Int(ceil(practiceAutoGoDelaySeconds))
+        pianoAutoGoTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                guard let self, self.pianoAutoGoDeadline != nil else { return }
+                self.handlePianoAutoGoTimer()
+            }
+        }
+    }
+
+    func handlePianoAutoGoTimer() {
+        guard let deadline = pianoAutoGoDeadline else { return }
+        guard selectedInstrument == .electricPiano, pianoPracticeVisible, practiceAutoGoEnabled, piano.phase == .results,
+              !timingAlignmentPhase.locksConfiguration, !isRefreshingAudioEngine else { stopPianoAutoGo(); return }
+        let now = clock.currentHostTime()
+        if now >= deadline { stopPianoAutoGo(); startPianoPractice() }
+        else { pianoAutoGoSecondsRemaining = Int(ceil(Double(timeline.converter.nanoseconds(forHostTimeDuration: deadline - now)) / 1_000_000_000)) }
+    }
+
+    func stopPianoAutoGo() { pianoAutoGoTask?.cancel(); pianoAutoGoTask = nil; pianoAutoGoDeadline = nil; pianoAutoGoSecondsRemaining = nil }
+
+    func updatePianoSession(_ id: UUID, notes: String, tags: [String]) {
+        guard notes.count <= 100_000, tags.count <= 100, tags.allSatisfy({ $0.count <= 1_024 }),
+              let index = pianoLibrary.sessions.firstIndex(where: { $0.id == id }) else { return }
+        pianoLibrary.sessions[index].notes = notes
+        pianoLibrary.sessions[index].tags = Array(Set(tags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
+        pianoLibrary.sessions[index].updatedAt = Date()
+        persistPracticeData()
+    }
+
+    func rescorePianoSession(_ id: UUID) {
+        guard let index = pianoLibrary.sessions.firstIndex(where: { $0.id == id }) else { return }
+        let old = pianoLibrary.sessions[index].outcome
+        pianoLibrary.sessions[index].outcome = PianoEventMatcher().score(pattern: old.pattern, actual: old.actualNotes,
+            configuration: old.configuration, droppedCount: old.droppedCount, inputIssueCount: old.inputIssueCount)
+        pianoLibrary.sessions[index].updatedAt = Date()
+        // Rescoring never advances transport or awards an additional clean-run streak.
+        persistPracticeData()
+    }
+
+    func deletePianoSession(_ id: UUID) {
+        pianoLibrary.sessions.removeAll { $0.id == id }
+        pianoLibrary.ceiling?.sessionIDs.removeAll { $0 == id }
+        deletePracticeAudio(sessionID: id)
+        persistPracticeData()
+    }
+
+    func clearPianoHistory() {
+        for session in pianoLibrary.sessions { deletePracticeAudio(sessionID: session.id) }
+        pianoLibrary.sessions = []; pianoLibrary.tempos = []; pianoLibrary.ceiling = nil
+        persistPracticeData()
+    }
+
+    private func mergePianoArchive(_ incoming: PianoWorkflowArchive) throws -> PianoWorkflowArchive {
+        func merge<T: Identifiable>(_ local: [T], _ imported: [T], date: (T) -> Date) -> [T] where T.ID: Hashable {
+            var result = Dictionary(uniqueKeysWithValues: local.map { ($0.id, $0) })
+            for item in imported where result[item.id].map({ date($0) <= date(item) }) ?? true { result[item.id] = item }
+            return Array(result.values)
+        }
+        var result = pianoLibrary
+        result.exercises = merge(result.exercises, incoming.exercises, date: { $0.updatedAt })
+        result.songs = merge(result.songs, incoming.songs, date: { $0.updatedAt })
+        result.sessions = merge(result.sessions, incoming.sessions, date: { $0.updatedAt }).sorted { $0.completedAt > $1.completedAt }
+        result.tempos = merge(result.tempos, incoming.tempos, date: { $0.updatedAt })
+        if !piano.phase.isActive, let run = incoming.ceiling, run.updatedAt > (result.ceiling?.updatedAt ?? .distantPast) { result.ceiling = run }
+        guard result.isValid else { throw PracticeDataPersistenceError.invalidArchive("The combined piano library exceeds supported limits or contains invalid evidence.") }
+        return result
     }
 }

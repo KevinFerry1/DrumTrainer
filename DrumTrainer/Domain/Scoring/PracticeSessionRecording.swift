@@ -180,6 +180,9 @@ struct PracticeTimingTimeline: Equatable, Sendable {
 }
 
 struct SavedCustomExercise: Identifiable, Codable, Equatable, Sendable {
+    var instrument: InstrumentKind? = .drums
+    var effectiveInstrument: InstrumentKind { instrument ?? .drums }
+
     let id: UUID
     var definition: CustomMeasureDefinition
     let createdAt: Date
@@ -235,6 +238,9 @@ struct PracticeVoiceSummary: Codable, Equatable, Sendable {
 }
 
 struct PracticeSessionSummary: Identifiable, Codable, Equatable, Sendable {
+    var instrument: InstrumentKind? = .drums
+    var effectiveInstrument: InstrumentKind { instrument ?? .drums }
+
     static let scoringAlgorithmVersion = 5
 
     let id: UUID
@@ -540,9 +546,11 @@ struct ExerciseCeilingRecord: Identifiable, Codable, Equatable, Sendable {
 }
 
 struct PracticeDataArchive: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 9
+    static let currentSchemaVersion = 11
 
     var schemaVersion: Int
+    var instrumentProfiles: [InstrumentProfile]
+    var piano: PianoWorkflowArchive
     var customExercises: [SavedCustomExercise]
     var importedSongs: [ImportedSong]
     var sessions: [PracticeSessionSummary]
@@ -555,6 +563,8 @@ struct PracticeDataArchive: Codable, Equatable, Sendable {
 
     init(
         schemaVersion: Int = Self.currentSchemaVersion,
+        instrumentProfiles: [InstrumentProfile] = InstrumentProfile.defaults,
+        piano: PianoWorkflowArchive = PianoWorkflowArchive(),
         customExercises: [SavedCustomExercise] = [],
         importedSongs: [ImportedSong] = [],
         sessions: [PracticeSessionSummary] = [],
@@ -566,6 +576,8 @@ struct PracticeDataArchive: Codable, Equatable, Sendable {
         ceilingRecords: [ExerciseCeilingRecord] = []
     ) {
         self.schemaVersion = schemaVersion
+        self.instrumentProfiles = instrumentProfiles
+        self.piano = piano
         self.customExercises = customExercises
         self.importedSongs = importedSongs
         self.sessions = sessions
@@ -579,6 +591,8 @@ struct PracticeDataArchive: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
+        case instrumentProfiles
+        case piano
         case customExercises
         case importedSongs
         case sessions
@@ -593,6 +607,8 @@ struct PracticeDataArchive: Codable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        instrumentProfiles = try container.decodeIfPresent([InstrumentProfile].self, forKey: .instrumentProfiles) ?? InstrumentProfile.defaults
+        piano = try container.decodeIfPresent(PianoWorkflowArchive.self, forKey: .piano) ?? PianoWorkflowArchive()
         customExercises = try container.decodeIfPresent([SavedCustomExercise].self, forKey: .customExercises) ?? []
         importedSongs = try container.decodeIfPresent([ImportedSong].self, forKey: .importedSongs) ?? []
         sessions = try container.decodeIfPresent([PracticeSessionSummary].self, forKey: .sessions) ?? []
@@ -619,6 +635,21 @@ struct PracticeDataArchive: Codable, Equatable, Sendable {
     func validatedAndMigrated() throws -> PracticeDataArchive {
         guard (1...Self.currentSchemaVersion).contains(schemaVersion) else {
             throw PracticeDataPersistenceError.unsupportedSchema(schemaVersion)
+        }
+        guard instrumentProfiles.count <= InstrumentKind.allCases.count,
+              Set(instrumentProfiles.map(\.instrument)).count == instrumentProfiles.count,
+              instrumentProfiles.allSatisfy(\.isValid) else {
+            throw PracticeDataPersistenceError.invalidArchive("Instrument profiles are duplicated or out of range.")
+        }
+        guard piano.isValid, Set(piano.sessions.map(\.id)).isDisjoint(with: Set(sessions.map(\.id) + sessionRecords.map(\.id))) else {
+            throw PracticeDataPersistenceError.invalidArchive("Piano data contains invalid evidence, duplicate identifiers, or exceeds supported limits.")
+        }
+        // Legacy drum definitions and piano evidence remain in separate collections.
+        guard customExercises.allSatisfy({ $0.effectiveInstrument == .drums }),
+              importedSongs.allSatisfy({ $0.effectiveInstrument == .drums }),
+              sessions.allSatisfy({ $0.effectiveInstrument == .drums }),
+              sessionRecords.allSatisfy({ $0.summary.effectiveInstrument == .drums }) else {
+            throw PracticeDataPersistenceError.invalidArchive("Drum evidence cannot be labeled as a pitched instrument.")
         }
         guard customExercises.count <= 1_000,
               importedSongs.count <= 500,
@@ -687,19 +718,30 @@ struct PracticeDataArchive: Codable, Equatable, Sendable {
               Set(ceilingRecords.map(\.id)).count == ceilingRecords.count else {
             throw PracticeDataPersistenceError.invalidArchive("Duplicate or orphaned identifiers were found.")
         }
-        let summariesByID = Dictionary(uniqueKeysWithValues: combinedSessions.map { ($0.id, $0) })
+        let summariesByID = Dictionary(uniqueKeysWithValues: combinedSessions.map { summary in
+            var normalized = summary
+            normalized.instrument = .drums
+            return (summary.id, normalized)
+        })
         guard recordIDs.isSubset(of: Set(combinedSessions.map(\.id))),
-              sessionRecords.allSatisfy({ summariesByID[$0.id] == $0.summary }),
+              sessionRecords.allSatisfy({ record in
+                  var normalized = record.summary
+                  normalized.instrument = .drums
+                  return summariesByID[record.id] == normalized
+              }),
               activeCeilingRun.map({
                   Set($0.sessionIDs).isSubset(of: Set(combinedSessions.map(\.id)))
               }) ?? true else {
             throw PracticeDataPersistenceError.invalidArchive("Session records do not match their summaries.")
         }
+        let profilesByInstrument = Dictionary(uniqueKeysWithValues: instrumentProfiles.map { ($0.instrument, $0) })
         return PracticeDataArchive(
-            customExercises: customExercises,
-            importedSongs: importedSongs,
-            sessions: combinedSessions,
-            sessionRecords: sessionRecords,
+            instrumentProfiles: InstrumentKind.allCases.map { profilesByInstrument[$0] ?? InstrumentProfile(instrument: $0, updatedAt: .distantPast) },
+            piano: piano,
+            customExercises: customExercises.map { var value = $0; value.instrument = .drums; return value },
+            importedSongs: importedSongs.map { var value = $0; value.instrument = .drums; return value },
+            sessions: combinedSessions.map { var value = $0; value.instrument = .drums; return value },
+            sessionRecords: sessionRecords.map { var value = $0; value.summary.instrument = .drums; return value },
             tempoProgressionSettings: tempoProgressionSettings,
             tempoProgressions: tempoProgressions,
             ceilingModeSettings: ceilingModeSettings,

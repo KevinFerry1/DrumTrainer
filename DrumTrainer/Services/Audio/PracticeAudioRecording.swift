@@ -8,7 +8,7 @@ struct PracticeAudioAsset: Equatable, Sendable {
     let fileSizeBytes: Int64
 }
 
-enum PracticeAudioChannelSelection: String, CaseIterable, Identifiable, Sendable {
+enum PracticeAudioChannelSelection: String, CaseIterable, Identifiable, Codable, Sendable {
     case input1
     case input2
     case loopback34

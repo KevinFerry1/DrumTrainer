@@ -1,5 +1,21 @@
 import Foundation
 
+enum PracticeExerciseMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    case builtIn
+    case custom
+    case importedSong
+
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .builtIn: "Built-in"
+        case .custom: "Custom measure"
+        case .importedSong: "Imported song"
+        }
+    }
+}
+
+
 enum KickSubdivision: String, CaseIterable, Codable, Sendable {
     case eighths
     case sixteenths
@@ -504,6 +520,8 @@ struct PracticePattern: Identifiable, Codable, Equatable, Sendable {
 }
 
 struct ExpectedEvent: Identifiable, Codable, Equatable, Sendable {
+    var musicalTarget: MusicalTarget { .drum(voice) }
+
     let id: UUID
     let measure: Int
     let beat: Int

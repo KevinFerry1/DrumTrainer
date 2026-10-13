@@ -18,6 +18,8 @@ struct ImportedMIDINoteEvent: Codable, Equatable, Sendable {
     let noteNumber: UInt8
     let velocity: UInt8
     let channel: UInt8
+    var durationTicks: Int64?
+    var durationUncertain: Bool?
 }
 
 struct ImportedMIDITrack: Identifiable, Codable, Equatable, Sendable {
@@ -25,6 +27,7 @@ struct ImportedMIDITrack: Identifiable, Codable, Equatable, Sendable {
     let index: Int
     let name: String
     let notes: [ImportedMIDINoteEvent]
+    var controls: [ImportedMIDIControlEvent]?
 
     var displayName: String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -40,6 +43,9 @@ struct ImportedMIDINoteMapping: Codable, Equatable, Sendable {
 }
 
 struct ImportedSong: Identifiable, Codable, Equatable, Sendable {
+    var instrument: InstrumentKind? = .drums
+    var effectiveInstrument: InstrumentKind { instrument ?? .drums }
+
     let id: UUID
     var name: String
     let sourceFilename: String
@@ -278,5 +284,19 @@ enum ImportedSongTimeline {
                 if result.last?.tick == signature.tick { result[result.count - 1] = signature }
                 else { result.append(signature) }
             }
+    }
+}
+
+struct ImportedMIDIControlEvent: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable { case controlChange, pitchBend }
+    let tick: Int64
+    let channel: UInt8
+    let kind: Kind
+    let controller: UInt8?
+    let value: Int
+    var isValid: Bool {
+        (0...100_000_000).contains(tick) && channel < 16
+            && (kind == .pitchBend ? (0...16_383).contains(value)
+                : (controller.map { $0 < 128 } ?? false) && (0...127).contains(value))
     }
 }

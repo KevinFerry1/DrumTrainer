@@ -22,6 +22,8 @@ enum EventTimestampDisplayMode: String, CaseIterable, Identifiable, Sendable {
 }
 
 struct PerformanceEvent: Identifiable, Codable, Equatable, Sendable {
+    var musicalTarget: MusicalTarget { .drum(voice) }
+
     let id: UUID
     let sessionID: UUID?
     let source: EventSource

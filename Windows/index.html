@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DrumTrainer · Windows</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><div class="brand"><span class="logo">▥</span><div><strong>DrumTrainer</strong><small>WINDOWS PRACTICE EDITION</small></div></div><span id="deviceBadge" class="badge">Connect your kit to begin</span></header>
+<main>
+  <div class="intro"><div><p class="eyebrow">KEEP THE MOMENTUM</p><h1>Your next clean run.</h1><p>MIDI hands. Acoustic feet. One practice timeline.</p></div><button id="demo" class="secondary">Try a simulated run</button></div>
+  <div id="notice" role="status" aria-live="polite">Connect MIDI and allow microphone access. Use headphones for kick detection.</div>
+  <div class="layout">
+    <aside>
+      <section><h2>01 <span>Your setup</span></h2>
+        <button id="connect">Connect MIDI</button><label>MIDI input<select id="midi"><option value="">None</option></select></label>
+        <div class="row"><label>Kick source<select id="kickSource"><option value="microphone">Microphone only</option><option value="midi">MIDI only</option><option value="both">Both (deduplicated)</option></select></label><label class="check"><input id="gradeKicks" type="checkbox" checked>Grade kicks</label></div>
+        <label>Kick microphone<select id="microphone"><option value="">System default</option></select></label>
+        <div class="row"><button id="listen" class="secondary">Enable microphone</button><button id="noise" class="secondary">Sample noise</button></div>
+        <label>Input level<meter id="level" min="0" max="1" value="0"></meter></label>
+        <div class="row"><label>Threshold<input id="threshold" type="number" min="0.001" max="1" step="0.005" value="0.12"></label><label>Lockout · ms<input id="lockout" type="number" min="10" max="200" value="40"></label></div>
+        <p class="hint">Basic transient detection. Sample quiet room noise, then test isolated kicks and simultaneous pad hits. The Mac learned sound filter is not included.</p>
+        <label>Click output<select id="output"><option value="">System default</option></select></label>
+        <p id="outputHelp" class="hint">If your output is not listed, choose it in Windows sound settings.</p>
+        <label>Click volume<input id="volume" type="range" min="0" max="0.5" step="0.01" value="0.15"></label>
+        <div class="row"><label>MIDI correction · ms<input id="midiCorrection" type="number" min="-500" max="500" value="0"></label><label>Mic correction · ms<input id="micCorrection" type="number" min="-500" max="500" value="0"></label></div>
+        <div class="row"><button id="alignMidi" class="secondary">Align MIDI</button><button id="alignMic" class="secondary">Align mic</button></div>
+        <p class="hint">Alignment: after 8 count-in clicks, play one hit on each of 12 clicks. Corrections apply only to scoring and belong to this input/output pairing.</p>
+        <details><summary>Pad mapping</summary><p id="lastNote" class="hint">Strike a pad, then choose its voice.</p><label>Last MIDI note<input id="mapNote" type="number" min="0" max="127" value="36"></label><label>Map to<select id="mapVoice"></select></label><button id="saveMap" class="secondary">Save for this MIDI input</button></details>
+      </section>
+    </aside>
+    <div class="workspace">
+      <section><h2>02 <span>Practice</span><span id="phase" class="badge">READY</span></h2>
+        <div class="practice-controls"><label>Exercise<select id="exercise"></select></label><label>BPM<input id="bpm" type="number" min="40" max="240" value="120"></label><label>Repeats<input id="repeats" type="number" min="1" max="16" value="4"></label></div>
+        <p id="guide" class="hint"></p>
+        <div class="score-wrap"><canvas id="score" aria-label="Scrolling drum voice lanes and practice playhead"></canvas></div>
+        <div class="transport"><button id="start">Start exercise</button><button id="stop" class="secondary" disabled>Cancel</button><button id="click" class="secondary">Metronome only</button><span id="position">8-beat count-in</span></div>
+        <div class="row"><label class="check"><input id="auto" type="checkbox">Auto repeat after 7 seconds</label><label class="check"><input id="advance" type="checkbox">+5 BPM after 3 clean runs</label></div>
+        <div id="result" hidden><div class="result-top"><h3 id="resultTitle">Results</h3><button id="again" class="secondary">Play again</button></div><div id="metrics" class="metrics"></div><div id="voiceMetrics"></div><details><summary>Expected versus played</summary><div class="table-scroll"><table><thead><tr><th>Measure</th><th>Expected</th><th>Played</th><th>Result</th><th>Timing</th></tr></thead><tbody id="ledger"></tbody></table></div></details></div>
+      </section>
+      <section><h2>03 <span>Make it yours</span></h2>
+        <div class="row"><label>Measure name<input id="customName" type="text" maxlength="120" value="My custom measure"></label><label>Grid<select id="grid"><option value="sixteenths">16th notes</option><option value="eighths">8th notes</option><option value="triplets">Triplets</option></select></label></div>
+        <p class="hint">Click a cell: note → accent &gt; → ghost g → rest. Accents require 100/127 velocity plus local contrast; ghosts require ≤50/127 plus local contrast. Microphone velocity cannot grade dynamics.</p>
+        <div id="editor" class="editor"></div><button id="saveExercise" class="secondary">Save as new exercise</button>
+      </section>
+      <section><h2>04 <span>Your progress</span></h2><div class="row"><button id="export" class="secondary">Export backup</button><label class="file-button">Import Mac / Windows backup<input id="import" type="file" accept=".json,application/json" hidden></label><button id="restoreNative" class="secondary" hidden>Download original Mac backups</button></div><p class="hint">History is saved in this browser. Export a backup before changing computers or clearing browser data. Mac measures and sequences can be practiced; Mac history can be reviewed. Imported songs and recordings remain outside this edition.</p><div id="history"></div></section>
+      <section><h2>Live input <span id="hitCount" class="badge">0 HITS</span></h2><div id="log" class="log">Waiting for a MIDI pad or microphone kick…</div></section>
+    </div>
+  </div>
+  <footer>Offline after download · Audio stays on this computer · Keep this window visible while practicing</footer>
+</main>
+<script type="module" src="app.mjs"></script>
+</body></html>

@@ -1,4 +1,5 @@
 import CoreMIDI
+import AudioToolbox
 import Foundation
 
 struct MIDIInputDevice: Identifiable, Hashable, Sendable {
@@ -58,10 +59,15 @@ final class MIDIInputService: @unchecked Sendable {
     typealias DevicesHandler = @Sendable ([MIDIInputDevice]) -> Void
     typealias NoteHandler = @Sendable (MIDINoteOn, String) -> Void
     typealias StatusHandler = @Sendable (MIDIInputStatus) -> Void
+    typealias MessagesHandler = @Sendable (MIDIMessageBatch) -> Void
 
     private let onDevicesChanged: DevicesHandler
     private let onNoteOn: NoteHandler
     private let onStatusChanged: StatusHandler
+    private let onMessages: MessagesHandler
+    private var inputGeneration: UInt64 = 0
+
+    var connectionGeneration: UInt64 { stateLock.withLock { inputGeneration } }
     private let stateLock = NSLock()
 
     private var client = MIDIClientRef()
@@ -74,11 +80,13 @@ final class MIDIInputService: @unchecked Sendable {
     init(
         onDevicesChanged: @escaping DevicesHandler,
         onNoteOn: @escaping NoteHandler,
-        onStatusChanged: @escaping StatusHandler
+        onStatusChanged: @escaping StatusHandler,
+        onMessages: @escaping MessagesHandler = { _ in }
     ) {
         self.onDevicesChanged = onDevicesChanged
         self.onNoteOn = onNoteOn
         self.onStatusChanged = onStatusChanged
+        self.onMessages = onMessages
     }
 
     deinit {
@@ -113,8 +121,8 @@ final class MIDIInputService: @unchecked Sendable {
             "DrumTrainer Input" as CFString,
             ._1_0,
             &newPort
-        ) { [weak self] eventList, _ in
-            self?.receive(eventList)
+        ) { [weak self] eventList, context in
+            self?.receive(eventList, generation: UInt64(UInt(bitPattern: context)))
         }
 
         guard portStatus == noErr else {
@@ -135,6 +143,8 @@ final class MIDIInputService: @unchecked Sendable {
 
     func select(deviceID: MIDIUniqueID?) {
         stateLock.lock()
+        inputGeneration &+= 1
+        let generation = inputGeneration
         let port = inputPort
         let previousEndpoint = selectedEndpoint
         stateLock.unlock()
@@ -163,7 +173,7 @@ final class MIDIInputService: @unchecked Sendable {
             return
         }
 
-        let status = MIDIPortConnectSource(port, device.endpoint, nil)
+        let status = MIDIPortConnectSource(port, device.endpoint, UnsafeMutableRawPointer(bitPattern: UInt(generation)))
         guard status == noErr else {
             onStatusChanged(.error("Could not connect to \(device.name) (error \(status))."))
             return
@@ -196,6 +206,7 @@ final class MIDIInputService: @unchecked Sendable {
             if oldEndpoint != 0, port != 0 { MIDIPortDisconnectSource(port, oldEndpoint) }
             stateLock.lock()
             selectedEndpoint = 0
+            inputGeneration &+= 1
             stateLock.unlock()
             onStatusChanged(.disconnected(activeName ?? "Selected MIDI input"))
             return
@@ -203,7 +214,8 @@ final class MIDIInputService: @unchecked Sendable {
 
         if replacement.endpoint != oldEndpoint, port != 0 {
             if oldEndpoint != 0 { MIDIPortDisconnectSource(port, oldEndpoint) }
-            if MIDIPortConnectSource(port, replacement.endpoint, nil) == noErr {
+            let generation = stateLock.withLock { inputGeneration &+= 1; return inputGeneration }
+            if MIDIPortConnectSource(port, replacement.endpoint, UnsafeMutableRawPointer(bitPattern: UInt(generation))) == noErr {
                 stateLock.lock()
                 selectedEndpoint = replacement.endpoint
                 selectedName = replacement.name
@@ -213,27 +225,36 @@ final class MIDIInputService: @unchecked Sendable {
         }
     }
 
-    private func receive(_ eventList: UnsafePointer<MIDIEventList>) {
-        stateLock.lock()
-        let endpointName = selectedName ?? "MIDI input"
-        stateLock.unlock()
-
-        withUnsafePointer(to: eventList.pointee.packet) { firstPacket in
-            var packetPointer = firstPacket
-            for _ in 0..<eventList.pointee.numPackets {
-                let packet = packetPointer.pointee
-                withUnsafeBytes(of: packet.words) { rawWords in
-                    let words = rawWords.bindMemory(to: UInt32.self)
-                    for index in 0..<Int(packet.wordCount) {
-                        if let note = MIDI1UMPParser.noteOn(
-                            from: words[index],
-                            hostTime: packet.timeStamp
-                        ) {
-                            onNoteOn(note, endpointName)
-                        }
-                    }
-                }
-                packetPointer = UnsafePointer(MIDIEventPacketNext(packetPointer))
+    private func receive(_ eventList: UnsafePointer<MIDIEventList>, generation: UInt64) {
+        let receivedHostTime = AudioGetCurrentHostTime()
+        let context = stateLock.withLock { (selectedID, selectedName ?? "MIDI input", inputGeneration) }
+        guard let endpointID = context.0, generation == context.2 else { return }
+        var events: [MIDIChannelEvent] = []
+        var dropped = 0
+        // CoreMIDI packets and lists are variable-length. Taking a Swift value
+        // copy of .packet truncates it to the 64-word declaration and breaks Next.
+        let packetOffset = MemoryLayout<MIDIEventList>.offset(of: \.packet)!
+        var packetPointer = UnsafeRawPointer(eventList).advanced(by: packetOffset).assumingMemoryBound(to: MIDIEventPacket.self)
+        for _ in 0..<eventList.pointee.numPackets {
+            let wordCount = Int(packetPointer.pointee.wordCount)
+            let count = min(wordCount, 4_096)
+            let wordOffset = MemoryLayout<MIDIEventPacket>.offset(of: \.words)!
+            let base = UnsafeRawPointer(packetPointer).advanced(by: wordOffset).assumingMemoryBound(to: UInt32.self)
+            let parsed = MIDI1UMPParser.channelEvents(words: Array(UnsafeBufferPointer(start: base, count: count)),
+                                                     hostTime: packetPointer.pointee.timeStamp)
+            dropped += parsed.dropped + max(wordCount - count, 0)
+            for event in parsed.events {
+                if events.count < 4_096 { events.append(event) }
+                else { dropped += 1 }
+            }
+            packetPointer = UnsafePointer(MIDIEventPacketNext(packetPointer))
+        }
+        guard connectionGeneration == generation else { return }
+        onMessages(MIDIMessageBatch(events: events, endpointID: endpointID, endpointName: context.1,
+                                   connectionGeneration: generation, droppedCount: dropped, receivedHostTime: receivedHostTime))
+        for event in events {
+            if case let .noteOn(note, velocity) = event.payload {
+                onNoteOn(MIDINoteOn(channel: event.channel, note: note, velocity: velocity, hostTime: event.hostTime), context.1)
             }
         }
     }

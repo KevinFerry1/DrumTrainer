@@ -72,7 +72,7 @@ final class PracticeSessionRecordingTests: XCTestCase {
         let measure = CustomMeasureDefinition(name: "Legacy", hits: [PracticeExerciseHit(slot: 0, voice: .snare)])
         let old = PracticeDataArchive(schemaVersion: 8, customExercises: [SavedCustomExercise(definition: measure)])
         let migrated = try PracticeDataArchive.decodeAndValidate(old.encodedJSON())
-        XCTAssertEqual(migrated.schemaVersion, 9)
+        XCTAssertEqual(migrated.schemaVersion, PracticeDataArchive.currentSchemaVersion)
         XCTAssertFalse(try XCTUnwrap(migrated.customExercises.first).definition.isSequence)
         var invalid = measure
         invalid.sequenceSteps = [CustomMeasureStep(measure: measure, repeats: 0)]
@@ -260,7 +260,7 @@ final class PracticeSessionRecordingTests: XCTestCase {
         let state = AppState(
             clock: FixedHostClock(hostTime: 100), converter: LinearHostTimeConverter(nanosecondsPerTick: 1),
             practiceDataStore: DiscardingTransportTestStore(), metronomeEngine: transport,
-            externalPlaybackListener: listener
+            externalPlaybackListener: listener, userPreferences: makeUserPreferences()
         )
         try state.importStandardMIDI(Data([
             0x4D, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, 0, 0, 1, 1, 0xE0,
@@ -275,11 +275,113 @@ final class PracticeSessionRecordingTests: XCTestCase {
     }
 
     @MainActor
+    func testAutoGoDefaultsToEnabledAndStartsNextRoundAfterSevenSeconds() {
+        let transport = ControllableTestMetronome()
+        let state = makeTransportState(transport)
+        XCTAssertTrue(state.practiceAutoGoEnabled)
+        XCTAssertEqual(state.practiceAutoGoDelaySeconds, 7)
+        state.setPracticeViewVisible(true)
+        state.startPractice()
+        finishTransportPractice(state)
+        XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 7)
+        state.handlePracticeAutoGoTimer(at: 7_000_000_099)
+        XCTAssertEqual(state.practicePhase, .results)
+        XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 1)
+        state.handlePracticeAutoGoTimer(at: 7_000_000_100)
+        XCTAssertEqual(state.practicePhase, .countIn(beatsRemaining: 8))
+        XCTAssertEqual(transport.startCount, 2)
+        state.cancelPractice()
+    }
+
+    @MainActor
+    func testAutoGoPreferencesPersistAcrossAppStatesAndStaySeparateForEachUser() {
+        let preferences = makeUserPreferences()
+        let state = makeTransportState(ControllableTestMetronome(), userPreferences: preferences)
+        state.practiceAutoGoEnabled = false
+        state.practiceAutoGoDelaySeconds = 13
+
+        let reloaded = makeTransportState(ControllableTestMetronome(), userPreferences: preferences)
+        XCTAssertFalse(reloaded.practiceAutoGoEnabled)
+        XCTAssertEqual(reloaded.practiceAutoGoDelaySeconds, 13)
+        reloaded.practiceAutoGoEnabled = true
+        reloaded.practiceAutoGoDelaySeconds = 4
+
+        let enabledAgain = makeTransportState(ControllableTestMetronome(), userPreferences: preferences)
+        XCTAssertTrue(enabledAgain.practiceAutoGoEnabled)
+        XCTAssertEqual(enabledAgain.practiceAutoGoDelaySeconds, 4)
+        let anotherUser = makeTransportState(ControllableTestMetronome())
+        XCTAssertTrue(anotherUser.practiceAutoGoEnabled)
+        XCTAssertEqual(anotherUser.practiceAutoGoDelaySeconds, 7)
+    }
+
+    @MainActor
+    func testAutoGoDelayNormalizesAndPersistsInvalidPreferenceValues() {
+        let preferences = makeUserPreferences()
+        let state = makeTransportState(ControllableTestMetronome(), userPreferences: preferences)
+        for (input, expected) in [(0.0, 1.0), (45.0, 30.0), (12.6, 13.0), (.nan, 7.0)] {
+            state.practiceAutoGoDelaySeconds = input
+            XCTAssertEqual(state.practiceAutoGoDelaySeconds, expected)
+            let reloaded = makeTransportState(ControllableTestMetronome(), userPreferences: preferences)
+            XCTAssertEqual(reloaded.practiceAutoGoDelaySeconds, expected)
+        }
+        preferences.set(90.0, forKey: "DrumTrainer.preferences.autoGo.delaySeconds")
+        let reloaded = makeTransportState(ControllableTestMetronome(), userPreferences: preferences)
+        XCTAssertEqual(reloaded.practiceAutoGoDelaySeconds, 30)
+    }
+
+    @MainActor
+    func testStopAutoGoPausesResultsAndPlayAgainResumesAutomaticRepeats() {
+        let preferences = makeUserPreferences()
+        let transport = ControllableTestMetronome()
+        let state = makeTransportState(transport, userPreferences: preferences)
+        state.setPracticeViewVisible(true)
+        state.startPractice()
+        finishTransportPractice(state)
+        state.stopPracticeAutoGo()
+        XCTAssertNil(state.practiceAutoGoSecondsRemaining)
+        XCTAssertTrue(state.practiceAutoGoEnabled)
+        state.handlePracticeAutoGoTimer(at: 30_000_000_100)
+        XCTAssertEqual(state.practicePhase, .results)
+        XCTAssertEqual(transport.startCount, 1)
+
+        let reloaded = makeTransportState(ControllableTestMetronome(), userPreferences: preferences)
+        XCTAssertTrue(reloaded.practiceAutoGoEnabled)
+        state.dismissPracticeResults()
+        state.startPractice()
+        finishTransportPractice(state)
+        XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 7)
+        state.handlePracticeAutoGoTimer(at: 7_000_000_100)
+        XCTAssertEqual(state.practicePhase, .countIn(beatsRemaining: 8))
+        XCTAssertEqual(transport.startCount, 3)
+        finishTransportPractice(state)
+        XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 7)
+
+        // New Exercise also keeps Auto go on until the user changes Settings.
+        state.dismissPracticeResults()
+        state.practiceExercise = .discoGroove
+        state.startPractice()
+        finishTransportPractice(state)
+        XCTAssertTrue(state.practiceAutoGoEnabled)
+        XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 7)
+
+        state.dismissPracticeResults()
+        state.practiceAutoGoEnabled = false
+        state.startPractice()
+        finishTransportPractice(state)
+        XCTAssertNil(state.practiceAutoGoSecondsRemaining)
+        let startCount = transport.startCount
+        state.handlePracticeAutoGoTimer(at: 30_000_000_100)
+        XCTAssertEqual(state.practicePhase, .results)
+        XCTAssertEqual(transport.startCount, startCount)
+        state.cancelPractice()
+    }
+
+    @MainActor
     func testAutoGoWaitsForChosenDelayAndRepeatsWithFreshCountInAndHistory() throws {
         let transport = ControllableTestMetronome()
         let state = makeTransportState(transport)
         state.setPracticeViewVisible(true)
-        XCTAssertFalse(state.practiceAutoGoEnabled)
+        XCTAssertTrue(state.practiceAutoGoEnabled)
         state.practiceAutoGoEnabled = true
         state.practiceAutoGoDelaySeconds = 10
         state.practiceMeasures = 1
@@ -315,7 +417,7 @@ final class PracticeSessionRecordingTests: XCTestCase {
             state.practiceAutoGoEnabled = true
             state.startPractice()
             finishTransportPractice(state)
-            XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 8)
+            XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 7)
             switch action {
             case 0: state.practiceAutoGoEnabled = false
             case 1: state.dismissPracticeResults()
@@ -476,8 +578,8 @@ final class PracticeSessionRecordingTests: XCTestCase {
         let oldID = try XCTUnwrap(state.playbackArmID)
         state.handleExternalPlaybackOnset(hostTime: 100, id: oldID)
         state.finishPractice()
-        XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 8)
-        state.handlePracticeAutoGoTimer(at: 8_000_000_100)
+        XCTAssertEqual(state.practiceAutoGoSecondsRemaining, 7)
+        state.handlePracticeAutoGoTimer(at: 7_000_000_100)
         XCTAssertEqual(state.practicePhase, .waitingForPlayback)
         XCTAssertNotEqual(state.playbackArmID, oldID)
         XCTAssertEqual(transport.startCount, 0)
@@ -607,13 +709,22 @@ final class PracticeSessionRecordingTests: XCTestCase {
         state.resetPracticeTransport()
     }
 
+    private func makeUserPreferences() -> UserDefaults {
+        let suiteName = "UserPreferencesTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        addTeardownBlock { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        return defaults
+    }
+
     @MainActor
-    private func makeTransportState(_ transport: ControllableTestMetronome) -> AppState {
+    private func makeTransportState(
+        _ transport: ControllableTestMetronome, userPreferences: UserDefaults? = nil
+    ) -> AppState {
         let state = AppState(
             clock: FixedHostClock(hostTime: 100),
             converter: LinearHostTimeConverter(nanosecondsPerTick: 1),
             practiceDataStore: DiscardingTransportTestStore(),
-            metronomeEngine: transport
+            metronomeEngine: transport, userPreferences: userPreferences ?? makeUserPreferences()
         )
         state.practiceExercise = .basicRockGroove
         state.practiceBPM = 120

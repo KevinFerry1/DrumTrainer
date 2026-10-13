@@ -25,7 +25,7 @@ struct TimingAlignmentProfile: Identifiable, Codable, Equatable, Sendable {
     /// MIDI alignment is intentionally device-wide. `.unknown` is persisted as the
     /// shared MIDI scope so older per-voice profiles remain decodable but are ignored.
     var scopeDisplayName: String {
-        source == .midi ? "All e-kit MIDI drums" : voice.displayName
+        source == .midi ? (inputID.hasPrefix("electricPiano:") ? "Piano MIDI" : "All e-kit MIDI drums") : voice.displayName
     }
 
     var key: String {
