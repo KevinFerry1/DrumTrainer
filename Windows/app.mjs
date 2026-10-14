@@ -4,6 +4,7 @@ import {parseMIDI,validateSong,songMeasures,songBPM,firstSongMeasure,makeSongPat
 import {convertNativeArchives,rescoreSession,compactSession,hydrateSession} from './legacy-data.mjs';
 import {emptyProgress,exerciseIdentity,prepareCeiling,recordProgress,mergeNativeProgress} from './practice-progress.mjs';
 import {clickSounds,kickSounds,clickSamples,kickSamples,kickDynamics} from './sound-synthesis.mjs';
+import {importMacSetup} from './mac-setup.mjs';
 import {TimingAlignmentCollector} from './timing-alignment.mjs';
 import {PlaybackCapture} from './playback-capture.mjs';
 import {playbackStart} from './playback-onset.mjs';
@@ -428,7 +429,7 @@ function withError(fn) { return async (...args) => { try { await fn(...args); } 
 
 function setRunning(active) {
   const ids = ['start','demo','click','bpm','exercise','repeats','gradeKicks','kickSource','advance','threshold','lockout','alignMidi','alignMic','noise','connect','saveExercise','customName','grid','import','export','restoreNative','again','calibrateKick','saveCalibration','soundFilter','guard','match','practiceMode','song','songTrack','midiFile','deleteSong','sectionStart','sectionEnd','autoDelay','cleanRuns','advanceStep','ceiling','ceilingStep','tolerance','accentFloorEnabled','accentFloor','accentContrast','ghostCeilingEnabled','ghostCeiling','ghostContrast','editTool','loadExercise','updateExercise','deleteExercise','sequenceName','sequenceRepeats','sequenceMeasure','addSequenceStep','saveSequence','updateSequence','saveSessionNotes','rescore','deleteSession'];
-  ids.push('externalPlayback','playbackOffset','playbackThreshold');
+  ids.push('externalPlayback','playbackOffset','playbackThreshold','setupImport','applyMacMicrophone');
   ids.push('recordAudio','recordInput','recordChannels','takeFile','takeFolder','deleteTake','downloadTake','exportBundle');
   for (const id of ids) $(id).disabled = active;
   for (const button of $('editor').querySelectorAll('button')) button.disabled = active;
@@ -789,6 +790,10 @@ $('takeFolder').onchange=withError(async event=>{const files=[...event.target.fi
 $('downloadTake').onclick=()=>{if(displayedTake)downloadBlob(displayedTake.blob,displayedTake.filename??`${currentResult.id}.wav`);};
 $('deleteTake').onclick=withError(async()=>{if(!currentResult||!displayedTake)return;await removeTake(db,currentResult.id);await loadSessionTake(currentResult);notice('The browser copy of this take was deleted. Imported originals remain in your transferred folder.');});
 function backupSnapshot(){return {format:'DrumTrainerWindows',version:1,exportedAt:new Date().toISOString(),exercises:library,sessions:sessions.map(compactSession),nativeArchives,songs,progress,deletedSessionIDs,deletedSongIDs,settings};}
+function refreshMacProfiles(){const select=$('macMicrophoneProfile');select.replaceChildren();for(const [index,profile]of (settings.importedMacMicrophoneProfiles??[]).entries())select.append(new Option(`${profile.deviceName} · ${profile.quality} calibration`,index));$('macProfilePanel').hidden=!select.options.length;}
+refreshMacProfiles();
+$('setupImport').onchange=withError(async event=>{const file=event.target.files[0];event.target.value='';if(!file)return;if(file.size>2*1024*1024)throw new Error('Setup backup exceeds 2 MB.');const imported=importMacSetup(JSON.parse(await file.text()));cancel();settings={...settings,...imported.settings,importedMacMicrophoneProfiles:imported.microphoneProfiles,nativeMacTimingProfiles:imported.nativeTimingProfiles};for(const id of settingControls)if(settings[id]!=null){if($(id).type==='checkbox')$(id).checked=settings[id]===true;else $(id).value=settings[id];}saveSettings();refreshMacProfiles();configureOutput();notice('Mac sound and dynamics choices restored. Select the Windows microphone before applying its transferred profile. Run fresh MIDI/mic alignment for Windows; Mac timing values are preserved for reference.');});
+$('applyMacMicrophone').onclick=withError(()=>{if(!stream)throw new Error('Enable and select the Windows kick microphone first.');const original=settings.importedMacMicrophoneProfiles?.[Number($('macMicrophoneProfile').value)];if(!original)throw new Error('Select an imported microphone profile.');cancel();settings.microphoneProfiles??={};const deviceUID=$('microphone').value,profile={...structuredClone(original),id:crypto.randomUUID(),nativeDeviceUID:original.deviceUID,deviceUID,deviceName:$('microphone').selectedOptions[0]?.textContent,importedFromMac:true};settings.microphoneProfiles[deviceUID]=profile;settings.detectors??={};settings.detectors[deviceUID]={threshold:profile.suggestedThreshold,lockout:profile.retriggerLockoutMilliseconds};loadMicrophoneProfile();micNode?.port.postMessage(detectorSettings());saveSettings();notice('Transferred kick fingerprint applied to the selected Windows microphone. Check real kicks and crosstalk, then run fresh timing alignment.');});
 $('export').onclick = () => download(backupSnapshot(),`DrumTrainer-Windows-${new Date().toISOString().slice(0,10)}.json`);
 $('exportBundle').onclick=withError(async()=>{
   if(!db)throw new Error('Browser storage is unavailable. Export the JSON backup and download available takes separately.');
@@ -818,7 +823,7 @@ $('import').onchange = withError(async event => {
   if (nextArchives.length>20) throw new Error('Up to 20 original Mac archives can be kept. Your existing data was kept.');
   library=nextExercises;sessions=nextSessions;songs=nextSongs;nativeArchives=nextArchives;mergeNativeProgress(progress,imported.nativeArchives);
   deletedSessionIDs=deletedSessions;deletedSongIDs=deletedSongs;
-  if(imported.settings){settings={...settings,...imported.settings};for(const id of settingControls)if(settings[id]!=null){if($(id).type==='checkbox')$(id).checked=settings[id]===true;else $(id).value=settings[id];}saveSettings();loadMicrophoneProfile();loadCorrections();}
+  if(imported.settings){settings={...settings,...imported.settings};for(const id of settingControls)if(settings[id]!=null){if($(id).type==='checkbox')$(id).checked=settings[id]===true;else $(id).value=settings[id];}saveSettings();loadMicrophoneProfile();loadCorrections();refreshMacProfiles();}
   if(imported.progress){progress.tempoProgressions=mergeByID(progress.tempoProgressions,imported.progress.tempoProgressions??[]);progress.ceilingRecords=mergeByID(progress.ceilingRecords,imported.progress.ceilingRecords??[]);progress.activeCeilingRun??=imported.progress.activeCeilingRun??null;}
   await persist();refreshExercises();refreshSongs();renderHistory();notice(`Imported ${imported.exercises.length} exercises, ${imported.sessions.length+converted.sessions.length} detailed sessions and ${converted.songs.length+(imported.songs?.length??0)} songs. Original Mac archives are preserved.`);
 });

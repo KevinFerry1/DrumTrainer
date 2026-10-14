@@ -15,6 +15,7 @@ $files = @{
   '/legacy-data.mjs' = @('legacy-data.mjs', 'text/javascript; charset=utf-8')
   '/practice-progress.mjs' = @('practice-progress.mjs', 'text/javascript; charset=utf-8')
   '/backup-state.mjs' = @('backup-state.mjs', 'text/javascript; charset=utf-8')
+  '/mac-setup.mjs' = @('mac-setup.mjs', 'text/javascript; charset=utf-8')
   '/timing-alignment.mjs' = @('timing-alignment.mjs', 'text/javascript; charset=utf-8')
   '/playback-onset.mjs' = @('playback-onset.mjs', 'text/javascript; charset=utf-8')
   '/playback-worklet.mjs' = @('playback-worklet.mjs', 'text/javascript; charset=utf-8')
