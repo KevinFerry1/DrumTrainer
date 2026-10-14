@@ -33,7 +33,7 @@ $files = @{
 }
 try {
   $listener.Start()
-  $url = "http://localhost:${port}/"
+  $url = "http://127.0.0.1:${port}/"
   $candidates = @(
     "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
     "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",

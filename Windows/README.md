@@ -8,7 +8,7 @@
 6. Run **Align MIDI** and **Align mic** for each input/output setup. At the fixed 60 BPM, listen to eight count-in clicks, then play one hit per click for 12 clicks. Review the compensation and spread, then choose **Save & Apply**. Alignment includes personal playing bias; it is not a laboratory latency measurement.
 7. Choose an exercise, tempo, and repeat count, then **Start exercise**. Begin after the eight count-in clicks. Keep the app visible; hiding it cancels the attempt to prevent unreliable timing. Space starts/pauses practice when you are not editing a control.
 
-No Xcode, Python, Node.js, paid account, installation, or administrator access is required. Windows PowerShell 5.1 and a current Chromium-based Microsoft Edge or Google Chrome are required. This uses browser MIDI and audio APIs on a server bound only to this computer at `http://localhost:8765`. It has no external libraries, network assets, analytics, or uploads. The included server serves only allowlisted app files; personal backup files are imported directly from your computer.
+No Xcode, Python, Node.js, paid account, installation, or administrator access is required. Windows PowerShell 5.1 and a current Chromium-based Microsoft Edge or Google Chrome are required. This uses browser MIDI and audio APIs on a server bound only to this computer at `http://127.0.0.1:8765`. It has no external libraries, network assets, analytics, or uploads. The included server serves only allowlisted app files; personal backup files are imported directly from your computer.
 
 ## Move your Mac data
 
