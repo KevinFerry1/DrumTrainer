@@ -70,6 +70,8 @@ try {
   try {
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $latest -NoBrowser -Port $foreignServer.LocalEndpoint.Port
     if ($LASTEXITCODE -ne 1 -or -not $foreignServer.Server.IsBound) { throw 'An unrelated server was not preserved.' }
+    # The expected rejection must not become the enclosing CI step's exit status.
+    $global:LASTEXITCODE = 0
   } finally { $foreignServer.Stop() }
   foreach ($route in @('/Mac-practice-backup.json','/README.md','/../README.md','/Mac-recordings/take.m4a')) {
     $status = 0
