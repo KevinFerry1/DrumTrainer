@@ -14,7 +14,7 @@ $stderr = Join-Path ([System.IO.Path]::GetTempPath()) "DrumTrainer-$testID.err.l
 $child = $null
 try {
   $arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -NoBrowser -Port $port"
-  $child = Start-Process powershell.exe -ArgumentList $arguments -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+  $child = Start-Process powershell.exe -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
   $url = "http://127.0.0.1:${port}"
   $ready = $false
   for ($i = 0; $i -lt 30; $i++) {
@@ -26,7 +26,7 @@ try {
   }
   if (-not $ready) { throw "Local launcher did not become ready. Request: $lastRequestError. Output: $(Get-Content $stdout -Raw). Errors: $(Get-Content $stderr -Raw)" }
   if (-not $response.Content.Contains('DrumTrainer')) { throw 'Unexpected index document.' }
-  foreach ($file in @('app.mjs','core.mjs','native-scoring.mjs','audio-core.mjs','kick-worklet.mjs')) {
+  foreach ($file in @('app.mjs','desktop-shell.mjs','core.mjs','native-scoring.mjs','audio-core.mjs','kick-worklet.mjs')) {
     $module = Invoke-WebRequest "$url/$file" -UseBasicParsing
     if ($module.StatusCode -ne 200 -or $module.Headers['Content-Type'] -notmatch 'text/javascript') { throw "Incorrect module response: $file" }
   }

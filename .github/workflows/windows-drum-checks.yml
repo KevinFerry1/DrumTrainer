@@ -25,6 +25,16 @@ jobs:
           $tests = Get-ChildItem Windows -Filter '*.test.mjs' | ForEach-Object { $_.FullName }
           node --test $tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check desktop tabs and restored custom exercise workflows
+        run: |
+          $domRoot = Join-Path $env:RUNNER_TEMP 'drumtrainer-dom-check'
+          npm install --prefix $domRoot --no-save --package-lock=false --ignore-scripts jsdom@26
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:DRUMTRAINER_TEST_MODULES = Join-Path $domRoot 'node_modules'
+          foreach ($mode in @('builtIn','custom','sequence')) {
+            node Windows/validation/check-desktop-dom.mjs $mode
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Test included PowerShell launcher
         shell: powershell
         run: ./Windows/launcher.test.ps1

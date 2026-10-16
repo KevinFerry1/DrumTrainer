@@ -1,3 +1,4 @@
+import {initializeDesktopShell,historyValues} from './desktop-shell.mjs';
 import {voices,gm,exercises,subdivisions,makePattern,score,median,importBackup} from './core.mjs';
 import {analyzeNoise,makeCalibrationProfile,CalibrationHitCollector,CrosstalkGuard,soundSimilarity} from './audio-core.mjs';
 import {parseMIDI,validateSong,songMeasures,songBPM,firstSongMeasure,makeSongPattern,importedGM} from './midi.mjs';
@@ -35,9 +36,23 @@ let activeRecorder = null, starting = null, finishing = false, finishGeneration 
 const soundBuffers = new Map(), kickVoices = Array(6).fill(null);
 const crosstalk = new CrosstalkGuard();
 const scheduled = new Set(), recent = [], lastKick = new Map();
+let draftRevision=0,liveSimulationTimer=null;
 let draft = {name:'My custom measure',subdivision:'sixteenths',hits:[]};
 let sequenceDraft = {name:'My sequence',subdivision:'sixteenths',hits:[],sequenceSteps:[],sequenceRepeats:1};
 const mergeByID = (old,added) => { const values=new Map(old.map(v=>[v.id,v])); added.forEach(v=>{if(!values.has(v.id))values.set(v.id,v);}); return [...values.values()]; };
+
+const desktop=initializeDesktopShell({onTabChange:(tab,previous)=>{if(previous==='practice'){clearAuto();if(!run)$('stop').disabled=true;}if(tab!=='live')stopLiveSimulation();},onPracticeType:setPracticeType,onReturnSetup:()=>{cancel();currentResult=null;}});
+function stopLiveSimulation(){clearInterval(liveSimulationTimer);liveSimulationTimer=null;$('liveSimulation').textContent='Start Test Simulation';}
+function setPracticeType(type){
+  cancel();currentResult=null;$('result').hidden=true;
+  const custom=type==='custom';$('customEditorPanel').dataset.editing=String(custom);$('practiceMode').value=type==='song'?'song':'exercise';
+  if(type==='builtIn'&&library.some(e=>e.id===$('exercise').value))$('exercise').value=exercises[0].id;
+  if(custom&&library.length&&!library.some(e=>e.id===$('exercise').value)){$('exercise').value=library[0].id;$('loadExercise').click();}
+  updateGuide();saveSettings();desktop.sync();
+}
+function showHistoryDetail(session){cancel();showResult(session);$('historyDetailBody').append($('result'));$('historyDetailDialog').showModal();desktop.sync();}
+$('closeHistoryDetail').onclick=()=>{$('historyDetailDialog').close();};
+$('historyDetailDialog').addEventListener('close',()=>{$('practiceContent').append($('result'));$('result').hidden=true;currentResult=null;desktop.sync();});
 
 function openDatabase() {
   return new Promise((resolve,reject) => {
@@ -88,6 +103,7 @@ for (const id of settingControls) {
 function saveSettings() {
   for (const id of settingControls) settings[id] = $(id).type === 'checkbox' ? $(id).checked : $(id).value;
   if($('practiceMode').value==='song'&&selectedSong()&&Number($('sectionStart').value)>0){settings.songSections??={};settings.songSections[selectedSong().id]={start:Number($('sectionStart').value),end:Number($('sectionEnd').value),bpm:Number($('bpm').value)};}
+  settings.desktopPracticeType=$('practiceMode').value==='song'?'song':$('customEditorPanel').dataset.editing==='true'?'custom':'builtIn';settings.desktopSequence=$('customEditorPanel').dataset.sequence==='true';
   if (!calibration) { settings.detectors ??= {}; settings.detectors[$('microphone').value] = {threshold:Number($('threshold').value),lockout:Number($('lockout').value)}; }
   try { localStorage.setItem(key,JSON.stringify(settings)); } catch { notice('Settings could not be saved. Export practice data before closing.'); }
 }
@@ -101,7 +117,7 @@ function scoringOptions() {
 function selectedSong() { return songs.find(s=>s.id===$('song').value); }
 function currentIdentity() {
   const song=$('practiceMode').value==='song'?selectedSong():null,definition=selectedDefinition(),saved=library.find(e=>e.id===$('exercise').value);
-  const identity={name:song?.name??definition.name,kind:song?'importedSong':saved?'custom':'builtIn',customExerciseID:saved?.id??null,importedSongID:song?.id??null};
+  const identity={name:song?.name??definition.name,kind:song?'importedSong':saved||$('customEditorPanel').dataset.editing==='true'?'custom':'builtIn',customExerciseID:saved?.id??null,importedSongID:song?.id??null};
   identity.id=exerciseIdentity(identity);return identity;
 }
 function selectedPattern() {
@@ -110,10 +126,11 @@ function selectedPattern() {
 }
 let previewCache={key:null,pattern:null};
 function previewPattern(){
-  const d=selectedDefinition(),song=selectedSong(),key=JSON.stringify([$('practiceMode').value,$('exercise').value,library.find(e=>e.id===$('exercise').value)?.updatedAt,song?.id,song?.updatedAt,song?.selectedTrackIndex,$('bpm').value,$('repeats').value,$('sectionStart').value,$('sectionEnd').value,scoringOptions(),d.name]);
+  const d=selectedDefinition(),song=selectedSong(),key=JSON.stringify([draftRevision,$('practiceMode').value,$('exercise').value,library.find(e=>e.id===$('exercise').value)?.updatedAt,song?.id,song?.updatedAt,song?.selectedTrackIndex,$('bpm').value,$('repeats').value,$('sectionStart').value,$('sectionEnd').value,scoringOptions(),d.name]);
   if(previewCache.key!==key){previewCache={key,pattern:selectedPattern()};}return previewCache.pattern;
 }
 function renderSequence(){
+  draftRevision++;
   $('sequenceName').value=sequenceDraft.name;$('sequenceRepeats').value=sequenceDraft.sequenceRepeats??1;$('sequenceSteps').replaceChildren();
   sequenceDraft.sequenceSteps.forEach((step,index)=>{
     const row=document.createElement('div');row.className='history-row';const label=document.createElement('span');label.textContent=`${index+1}. ${step.name}`;
@@ -204,6 +221,7 @@ function saveCorrection(source,value) {
   loadCorrections(); saveSettings();
 }
 function selectedDefinition() {
+  if($('practiceMode').value!=='song'&&$('customEditorPanel').dataset.editing==='true')return $('customEditorPanel').dataset.sequence==='true'?sequenceDraft:draft;
   return exercises.find(e => e.id === $('exercise').value) ?? library.find(e => e.id === $('exercise').value)?.definition ?? exercises[0];
 }
 function refreshExercises() {
@@ -223,6 +241,7 @@ function refreshExercises() {
 }
 function updateGuide() {
   const d = selectedDefinition();
+  text('exerciseDifficulty',d.difficulty??'');
   const songMode=$('practiceMode').value==='song';$('songPanel').hidden=!songMode;
   text('guide',songMode?'Practice a mapped MIDI track with its tempo and meter changes; loop the selected section at your chosen tempo.':d.guide ?? (d.sequenceSteps ? 'Saved measure sequence. The sequence’s own repeats determine its length.' : 'Your custom measure, repeated on the selected grid.'));
   $('exercise').disabled=songMode||!!run;$('repeats').disabled=(!songMode&&!!d.sequenceSteps)||!!run;
@@ -315,6 +334,7 @@ function clearScheduled() {
   scheduled.clear(); clearInterval(scheduler); scheduler = null;
 }
 function logHit(hit) {
+  const row=document.createElement('tr');for(const value of [Number.isFinite(hit.clock)?`${hit.clock.toFixed(3)} ms`:'—',hit.source,voices[hit.voice]??hit.voice,hit.velocity!=null?`Velocity ${hit.velocity}`:hit.amplitude!=null?`Peak ${hit.amplitude.toFixed(3)}`:'—']){const cell=document.createElement('td');cell.textContent=value;row.append(cell);}if(!count)$('liveEvents').replaceChildren();$('liveEvents').prepend(row);while($('liveEvents').children.length>500)$('liveEvents').lastElementChild.remove();
   count++; text('hitCount',`${count} HITS`);
   recent.unshift(`${new Date().toLocaleTimeString()}  ${voices[hit.voice] ?? hit.voice}  ${hit.source}${hit.note != null ? ` · note ${hit.note} · velocity ${hit.velocity}`:''}`);
   if (recent.length > 50) recent.pop(); text('log',recent.join('\n')); $('log').style.whiteSpace = 'pre-wrap';
@@ -431,7 +451,9 @@ function setRunning(active) {
   const ids = ['start','demo','click','bpm','exercise','repeats','gradeKicks','kickSource','advance','threshold','lockout','alignMidi','alignMic','noise','connect','saveExercise','customName','grid','import','export','restoreNative','again','calibrateKick','saveCalibration','soundFilter','guard','match','practiceMode','song','songTrack','midiFile','deleteSong','sectionStart','sectionEnd','autoDelay','cleanRuns','advanceStep','ceiling','ceilingStep','tolerance','accentFloorEnabled','accentFloor','accentContrast','ghostCeilingEnabled','ghostCeiling','ghostContrast','editTool','loadExercise','updateExercise','deleteExercise','sequenceName','sequenceRepeats','sequenceMeasure','addSequenceStep','saveSequence','updateSequence','saveSessionNotes','rescore','deleteSession'];
   ids.push('externalPlayback','playbackOffset','playbackThreshold','setupImport','applyMacMicrophone');
   ids.push('recordAudio','recordInput','recordChannels','takeFile','takeFolder','deleteTake','downloadTake','exportBundle');
+  ids.push('customMeasureMode','customSequenceMode');
   for (const id of ids) $(id).disabled = active;
+  for(const button of document.querySelectorAll('[data-practice-type]'))button.disabled=active;
   for (const button of $('editor').querySelectorAll('button')) button.disabled = active;
   for (const control of $('sequenceSteps').querySelectorAll('button,input')) control.disabled = active;
   $('saveAlignment').disabled=active||!pendingAlignment;
@@ -453,7 +475,7 @@ function cancel(message) {
   if (message) notice(message);
 }
 async function begin(kind='practice',demo=false,source=null){
-  if(starting||finishing)return;if(run)cancel();clearAuto();const token={canceled:false};starting=token;setRunning(true);
+  if(starting||finishing)return;stopLiveSimulation();if(run)cancel();clearAuto();const token={canceled:false};starting=token;setRunning(true);
   try{await beginAttempt(kind,demo,source,token);}catch(error){if(!token.canceled)cancel();throw error;}finally{if(starting===token)starting=null;if(!run)setRunning(false);}
 }
 async function beginAttempt(kind = 'practice',demo = false,source = null,token) {
@@ -553,7 +575,7 @@ async function finish() {
   if(generation!==finishGeneration)return;
   notice(completed.external?'Experimental companion complete. Alignment remains unverified; history and progress were not saved.':completed.demo ? 'Simulation complete. Connect your devices to capture your playing.' : completed.late ? 'Completed with a scheduling interruption. This run cannot qualify as clean; keep the window visible and close demanding apps.' : metrics.clean ? 'Clean run. Good timing and accuracy.' : 'Run saved. Review missed notes and timing, then try again.');
   if(!completed.demo&&decision.message)notice(decision.message);
-  if ($('auto').checked && !completed.demo && !completed.external && !document.hidden && !decision.found) {
+  if ($('auto').checked && !completed.demo && !completed.external && desktop.activeTab==='practice' && !document.hidden && !decision.found) {
     const delay=Math.min(Math.max(Number($('autoDelay').value)||7,1),30);
     notice(`${decision.message??'Run saved.'} Next count-in starts in ${delay} seconds. Cancel pauses automatic repeats.`);
     $('stop').disabled = false;
@@ -562,7 +584,7 @@ async function finish() {
   }finally{if(recorder?.id)await recorder.abort().catch(error=>text('recordStatus',error.message));finishing=false;setRunning(!!run||!!starting);if(autoTimer)$('stop').disabled=false;}
 }
 function showResult(s) {
-  currentResult = s; $('result').hidden = false;
+  currentResult = s; $('result').hidden = false;desktop.sync();
   const m = s.metrics;
   if(m.accents==null)m.accents=evaluateDynamics('accent',s.pattern.notes,s.evidence,m.results??[]);
   if(m.ghosts==null)m.ghosts=evaluateDynamics('ghost',s.pattern.notes,s.evidence,m.results??[]);
@@ -615,9 +637,25 @@ async function loadSessionTake(session){
 }
 function downloadBlob(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function nativeDate(value) { return typeof value === 'number' ? new Date((value+978307200)*1000):new Date(value); }
+function renderHistoryOverview(entries){
+  const values=historyValues(entries),overview=$('historyOverview');overview.replaceChildren();
+  const cards=[['Sessions',values.length,'Completed runs'],['Practice time',`${Math.round(values.reduce((sum,s)=>sum+s.duration,0))} s`,'Scored exercise time'],['Best recall',values.length?`${(Math.max(...values.map(s=>s.recall))*100).toFixed(1)}%`:'—','Any completed run'],['Clean sessions',values.filter(s=>s.clean).length,'≥95% recall and ≤25 ms']];
+  for(const [label,value,detail]of cards){const card=document.createElement('div');card.className='metric';const title=document.createElement('div');title.textContent=label;const number=document.createElement('strong');number.textContent=value;const caption=document.createElement('span');caption.textContent=detail;card.append(title,number,caption);overview.append(card);}
+  $('historyTrendPanel').hidden=!values.length;
+  const metric=$('historyMetric').value,trend=values.slice(-30).map(s=>s[metric]).filter(Number.isFinite),target=$('historyTrend');target.replaceChildren();
+  if(!trend.length){const empty=document.createElement('p');empty.className='empty';empty.textContent='This metric appears after a compatible exercise is completed.';target.append(empty);return;}
+  const width=900,height=180,left=55,top=15,bottom=145,min=Math.min(...trend),max=Math.max(...trend),span=Math.max(max-min,metric==='recall'?.01:1),format=v=>metric==='recall'?`${Math.round(v*100)}%`:metric==='bpm'?`${Math.round(v)} BPM`:`${v.toFixed(1)} ms`;
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox',`0 0 ${width} ${height}`);svg.setAttribute('role','img');svg.setAttribute('aria-label',`${$('historyMetric').selectedOptions[0].textContent} trend across ${trend.length} sessions, older to newer`);
+  function shape(tag,attrs,copy){const node=document.createElementNS(svg.namespaceURI,tag);for(const [key,value]of Object.entries(attrs))node.setAttribute(key,value);if(copy)node.textContent=copy;svg.append(node);}
+  for(const fraction of [0,.5,1]){const y=bottom-fraction*(bottom-top);shape('line',{x1:left,x2:width-15,y1:y,y2:y,stroke:'#444'});shape('text',{x:left-8,y:y+4,'text-anchor':'end',fill:'#aaa','font-size':10},format(min+fraction*span));}
+  const points=trend.map((v,i)=>[left+i*(width-left-15)/Math.max(1,trend.length-1),bottom-(v-min)/span*(bottom-top)]);
+  shape('polyline',{points:points.map(p=>p.join(',')).join(' '),fill:'none',stroke:'#0a84ff','stroke-width':2});for(const [cx,cy]of points)shape('circle',{cx,cy,r:3,fill:'#0a84ff'});
+  shape('text',{x:left,y:173,fill:'#aaa','font-size':11},format(trend[0]));shape('text',{x:width/2,y:173,'text-anchor':'middle',fill:'#aaa','font-size':11},'Older → newer');shape('text',{x:width-15,y:173,'text-anchor':'end',fill:'#aaa','font-size':11},format(trend.at(-1)));target.append(svg);
+}
 function renderHistory() {
   const entries=new Map(sessions.filter(s=>!deletedSessionIDs.includes(s.id)).map(s=>[s.id,{s,date:new Date(s.date),summaryOnly:false}]));
   nativeArchives.forEach(a=>(a.sessions??[]).forEach(s=>{if(!entries.has(s.id)&&!deletedSessionIDs.includes(s.id))entries.set(s.id,{s,date:nativeDate(s.completedAt),summaryOnly:true});}));
+  renderHistoryOverview([...entries.values()]);
   const query=$('historySearch').value.trim().toLocaleLowerCase(),filter=$('historyFilter').value;
   const ordered=[...entries.values()].filter(({s,summaryOnly})=>{
     const clean=summaryOnly?s.recall>=.95&&(s.latencyAdjustedMedianErrorMilliseconds??s.medianAbsoluteErrorMilliseconds??Infinity)<=25&&!s.droppedEventCount:s.metrics.clean;
@@ -629,7 +667,7 @@ function renderHistory() {
   for(const {s,date,summaryOnly}of ordered.slice(0,historyLimit)){
     const row=document.createElement('div');row.className='history-row';const copy=document.createElement('div');copy.textContent=`${s.name??s.exerciseName} · ${s.bpm} BPM`;
     const small=document.createElement('small');small.textContent=`${date.toLocaleString()} · ${percent(summaryOnly?s.recall:s.metrics.recall)} correct · ${ms(summaryOnly?s.medianAbsoluteErrorMilliseconds:s.metrics.error)}${summaryOnly||s.source==='mac'?' · Mac archive':''}${s.tags?.length?` · ${s.tags.join(', ')}`:''}`;copy.append(small);row.append(copy);
-    if(!summaryOnly){const button=document.createElement('button');button.className='secondary';button.textContent='Details';button.onclick=()=>{cancel();showResult(s);$('result').scrollIntoView({behavior:'smooth',block:'center'});};row.append(button);}
+    if(!summaryOnly){const button=document.createElement('button');button.className='secondary';button.textContent='Details';button.onclick=()=>showHistoryDetail(s);row.append(button);}
     $('history').append(row);
   }
   const p=document.createElement('p');p.className='hint';p.textContent=`Showing ${Math.min(historyLimit,ordered.length)} of ${ordered.length} sessions. Export includes saved sessions and original archives.`;$('history').append(p);$('historyMore').disabled=historyLimit>=ordered.length;
@@ -637,12 +675,16 @@ function renderHistory() {
   for(const record of progress.tempoProgressions.filter(p=>p.highestCleanBPM!=null)){
     const p=document.createElement('p');p.className='hint';const ceiling=progress.ceilingRecords.find(c=>c.id===record.id);p.textContent=`${record.exerciseName}: best clean ${record.highestCleanBPM} BPM${ceiling?` · verified ceiling ${ceiling.highestVerifiedBPM} BPM`:''}`;$('progressRecords').append(p);
   }
+  if(!$('progressRecords').children.length){const p=document.createElement('p');p.className='hint';p.textContent='Complete a clean run to set your first record.';$('progressRecords').append(p);}
+  desktop.sync();
 }
+$('historyMetric').onchange=renderHistory;
 function download(value,name) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(value)],{type:'application/json'}));
   const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url),1000);
 }
 function renderEditor() {
+  draftRevision++;
   const lanes = Object.keys(voices).filter(v=>v!=='unknown'), slots = subdivisions[draft.subdivision]*4;
   $('editor').replaceChildren();
   const createRow = label => { const row = document.createElement('div'); row.className = 'editor-row'; row.style.gridTemplateColumns = `90px repeat(${slots},1fr)`; const l = document.createElement('span'); l.className = 'editor-label'; l.textContent = label; row.append(l); $('editor').append(row); return row; };
@@ -666,12 +708,22 @@ function renderEditor() {
 }
 
 // Draw upcoming beats against a fixed playhead. UI refreshes never schedule audio or hits.
+function updateTransportStatus(){
+  if(run?.waiting){text('phase','WAITING');text('position','Wait for Ready, then press Play in Songsterr.');}
+  else if (run) {
+    const relative = audibleTime()-run.start;
+    if (relative < 0 && run.kind !== 'click') { const remaining = Math.min(8,Math.ceil(-relative/run.beatMs)); text('phase','COUNT IN'); text('position',`Count-in · ${remaining} clicks to go`); }
+    else { const beat=run.pattern?.referenceBeats?.filter(b=>b.time<=relative).at(-1);text('phase',run.kind==='alignment'?'ALIGNING':run.kind==='click'?'CLICK':'PLAYING');text('position',run.kind==='alignment'?`Click ${Math.min(12,Math.floor(relative/run.beatMs)+1)} of 12`:run.kind==='click'?`Beat ${Math.floor(Math.max(0,relative)/run.beatMs)%4+1}`:`Measure ${beat?.measure??1} · beat ${beat?.beat??1}`); }
+  }
+}
 function draw() {
+  updateTransportStatus();
   const canvas = $('score'), width = canvas.clientWidth, height = canvas.clientHeight, dpr = window.devicePixelRatio || 1;
   if (canvas.width !== Math.round(width*dpr) || canvas.height !== Math.round(height*dpr)) { canvas.width = Math.round(width*dpr); canvas.height = Math.round(height*dpr); }
+  if(!width||!height){animation=requestAnimationFrame(draw);return;}
   const c = canvas.getContext('2d'); c.setTransform(dpr,0,0,dpr,0,0); c.clearRect(0,0,width,height);
   let pattern = run?.pattern ?? currentResult?.pattern;
-  if (!pattern) { try { pattern = previewPattern(); } catch { animation = requestAnimationFrame(draw); return; } }
+  if (!pattern) { try { pattern = previewPattern(); } catch { c.fillStyle='#a1a1a6';c.font='13px Segoe UI, sans-serif';c.textAlign='center';c.fillText($('practiceMode').value==='song'?'Import or select a song to see its drum score.':'Add notes to your custom exercise to preview the score.',width/2,height/2);c.textAlign='start';animation = requestAnimationFrame(draw); return; } }
   const t = run?.kind === 'practice' ? Math.max(0,audibleTime()-run.start):0;
   canvas.classList.toggle('staff',$('scoreView').value==='staff');
   $('scoreMeasure').max=pattern.measures;
@@ -696,15 +748,13 @@ function draw() {
   }
   c.strokeStyle='#e9eaf3'; c.lineWidth=2; c.beginPath(); c.moveTo(playhead,25); c.lineTo(playhead,height-12); c.stroke(); c.lineWidth=1;
   }
-  if(run?.waiting){text('phase','WAITING');text('position','Wait for Ready, then press Play in Songsterr.');}
-  else if (run) {
-    const relative = audibleTime()-run.start;
-    if (relative < 0 && run.kind !== 'click') { const remaining = Math.min(8,Math.ceil(-relative/run.beatMs)); text('phase','COUNT IN'); text('position',`Count-in · ${remaining} clicks to go`); }
-    else { const beat=pattern.referenceBeats?.filter(b=>b.time<=relative).at(-1);text('phase',run.kind==='alignment'?'ALIGNING':run.kind==='click'?'CLICK':'PLAYING');text('position',run.kind==='alignment'?`Click ${Math.min(12,Math.floor(relative/run.beatMs)+1)} of 12`:run.kind==='click'?`Beat ${Math.floor(Math.max(0,relative)/run.beatMs)%4+1}`:`Measure ${beat?.measure??1} · beat ${beat?.beat??1}`); }
-  }
   animation = requestAnimationFrame(draw);
 }
 
+$('customMeasureMode').onclick=()=>{cancel();$('customEditorPanel').dataset.sequence='false';$('customMeasureMode').setAttribute('aria-pressed','true');$('customSequenceMode').setAttribute('aria-pressed','false');updateGuide();saveSettings();desktop.sync();};
+$('customSequenceMode').onclick=()=>{cancel();$('customEditorPanel').dataset.sequence='true';$('customMeasureMode').setAttribute('aria-pressed','false');$('customSequenceMode').setAttribute('aria-pressed','true');updateGuide();saveSettings();desktop.sync();};
+$('liveSimulation').onclick=withError(async()=>{if(liveSimulationTimer){stopLiveSimulation();return;}if(run)throw new Error('Stop the active practice before starting the test simulation.');await ensureAudio();let index=0;$('liveSimulation').textContent='Stop Test Simulation';liveSimulationTimer=setInterval(()=>{const voice=['closedHiHat','kick','closedHiHat','snare'][index++%4];logHit({voice,source:'simulation',velocity:80,clock:audibleTime()});},250);});
+$('clearLive').onclick=()=>{count=0;recent.length=0;text('hitCount','0 HITS');text('log','Waiting for a MIDI pad or microphone kick…');$('liveEvents').replaceChildren();};
 optionVoices($('ledgerVoice'));$('ledgerVoice').prepend(new Option('All voices','all'));$('ledgerVoice').value='all';
 for(const id of ['ledgerFilter','ledgerVoice'])$(id).onchange=()=>{ledgerLimit=200;renderLedger();};
 $('ledgerMore').onclick=()=>{ledgerLimit+=200;renderLedger();};
@@ -747,7 +797,7 @@ $('discardAlignment').onclick=()=>cancel('Alignment discarded. The previous save
 $('alignMidi').onclick = withError(() => begin('alignment',false,'midi'));
 $('alignMic').onclick = withError(() => begin('alignment',false,'microphone'));
 $('stop').onclick = () => cancel('Practice and automatic repeats paused. No interrupted attempt was saved.');
-$('exercise').onchange = () => { cancel(); currentResult = null; updateGuide(); saveSettings(); };
+$('exercise').onchange = () => { cancel(); currentResult = null;$('result').hidden=true;const saved=library.some(e=>e.id===$('exercise').value);$('customEditorPanel').dataset.editing=String(saved);if(saved)$('loadExercise').click();updateGuide();saveSettings();desktop.sync(); };
 for (const id of ['bpm','repeats','gradeKicks','kickSource']) $(id).onchange = () => { cancel(); currentResult = null; saveSettings(); };
 for (const id of ['auto','advance','volume']) $(id).onchange = () => { if (id==='auto' && !$('auto').checked) { clearAuto(); if (!run) $('stop').disabled = true; } saveSettings(); };
 for(const id of ['clickSound','clickGain','limiter','limiterCeiling','kickMonitorSource','kickSound','kickGain','kickVelocity','kickMonitorLockout'])$(id).onchange=withError(()=>{configureOutput();saveSettings();});
@@ -761,7 +811,7 @@ $('grid').onchange=()=>{
 $('saveExercise').onclick=withError(async()=>{draft.name=$('customName').value.trim()||'Custom measure';await saveDefinition(draft);});
 $('updateExercise').onclick=withError(async()=>{draft.name=$('customName').value.trim()||'Custom measure';await saveDefinition(draft,true);});
 $('loadExercise').onclick=withError(()=>{
- const definition=selectedDefinition();if(definition.sequenceSteps){sequenceDraft=structuredClone(definition);renderSequence();$('sequenceSteps').closest('details').open=true;}
+ const definition=library.find(e=>e.id===$('exercise').value)?.definition??exercises.find(e=>e.id===$('exercise').value)??draft;$('customEditorPanel').dataset.sequence=String(!!definition.sequenceSteps);if(definition.sequenceSteps){sequenceDraft=structuredClone(definition);renderSequence();$('sequenceSteps').closest('details').open=true;$('customSequenceMode').setAttribute('aria-pressed','true');$('customMeasureMode').setAttribute('aria-pressed','false');}
  else{draft=structuredClone(definition);draft.name=library.some(e=>e.id===$('exercise').value)?draft.name:`Custom ${draft.name}`;$('customName').value=draft.name;$('grid').value=draft.subdivision;renderEditor();settings.draft=structuredClone(draft);saveSettings();}
  notice('Selected exercise loaded into the editor. Save copy or Update selected when finished.');
 });
@@ -771,7 +821,7 @@ $('addSequenceStep').onclick=withError(()=>{const selected=library.find(e=>e.id=
 for(const id of ['sequenceName','sequenceRepeats'])$(id).onchange=()=>{saveSequenceDraft();renderSequence();};
 $('saveSequence').onclick=withError(async()=>{saveSequenceDraft();await saveDefinition(sequenceDraft);});
 $('updateSequence').onclick=withError(async()=>{saveSequenceDraft();await saveDefinition(sequenceDraft,true);});
-$('practiceMode').onchange=()=>{cancel();currentResult=null;updateGuide();saveSettings();};
+$('practiceMode').onchange=()=>{cancel();currentResult=null;updateGuide();saveSettings();desktop.sync();};
 $('song').onchange=()=>{cancel();currentResult=null;chooseSong();};
 $('songTrack').onchange=withError(async()=>{cancel();const song=selectedSong();if(!song)return;song.selectedTrackIndex=Number($('songTrack').value);song.updatedAt=new Date().toISOString();renderSong();chooseSong();await persist();});
 for(const id of ['sectionStart','sectionEnd'])$(id).onchange=()=>{cancel();currentResult=null;const song=selectedSong();if(song){settings.songSections??={};settings.songSections[song.id]={start:Number($('sectionStart').value),end:Number($('sectionEnd').value),bpm:Number($('bpm').value)};}renderSong();saveSettings();};
@@ -825,10 +875,10 @@ $('import').onchange = withError(async event => {
   deletedSessionIDs=deletedSessions;deletedSongIDs=deletedSongs;
   if(imported.settings){settings={...settings,...imported.settings};for(const id of settingControls)if(settings[id]!=null){if($(id).type==='checkbox')$(id).checked=settings[id]===true;else $(id).value=settings[id];}saveSettings();loadMicrophoneProfile();loadCorrections();refreshMacProfiles();}
   if(imported.progress){progress.tempoProgressions=mergeByID(progress.tempoProgressions,imported.progress.tempoProgressions??[]);progress.ceilingRecords=mergeByID(progress.ceilingRecords,imported.progress.ceilingRecords??[]);progress.activeCeilingRun??=imported.progress.activeCeilingRun??null;}
-  await persist();refreshExercises();refreshSongs();renderHistory();notice(`Imported ${imported.exercises.length} exercises, ${imported.sessions.length+converted.sessions.length} detailed sessions and ${converted.songs.length+(imported.songs?.length??0)} songs. Original Mac archives are preserved.`);
+  await persist();refreshExercises();refreshSongs();renderHistory();desktop.showTab('history');notice(`Imported ${imported.exercises.length} exercises, ${imported.sessions.length+converted.sessions.length} detailed sessions and ${converted.songs.length+(imported.songs?.length??0)} songs. Original Mac archives are preserved.`);
 });
 document.addEventListener('visibilitychange',() => { if (document.hidden && !run?.external && (run || autoTimer)) cancel('Practice paused because this window was hidden. Keep it visible while playing.'); });
-window.addEventListener('pagehide',() => { cancel(); stopMicrophone(); audio?.close(); });
+window.addEventListener('pagehide',() => { cancel(); stopMicrophone(); stopLiveSimulation();audio?.close(); });
 navigator.mediaDevices?.addEventListener('devicechange',withError(refreshAudioDevices));
 window.addEventListener('keydown',event => { if (event.code === 'Space' && !['INPUT','SELECT','TEXTAREA','BUTTON'].includes(document.activeElement.tagName)) { event.preventDefault(); run || autoTimer ? cancel('Paused.'):withError(() => begin())(); } });
-await withError(refreshAudioDevices)(); loadMicrophoneProfile();refreshSongs();$('customName').value=draft.name;$('grid').value=draft.subdivision;renderEditor();renderSequence();renderHistory();animation=requestAnimationFrame(draw);document.querySelector('main').inert=false;
+await withError(refreshAudioDevices)(); loadMicrophoneProfile();refreshSongs();$('customName').value=draft.name;$('grid').value=draft.subdivision;renderEditor();renderSequence();renderHistory();if(settings.desktopPracticeType==='custom'||library.some(e=>e.id===$('exercise').value)){$('customEditorPanel').dataset.editing='true';$('customEditorPanel').dataset.sequence=String(settings.desktopSequence??!!library.find(e=>e.id===$('exercise').value)?.definition.sequenceSteps);if(!settings.draft&&!settings.sequenceDraft)$('loadExercise').click();}desktop.sync();animation=requestAnimationFrame(draw);document.querySelector('main').inert=false;

@@ -34,7 +34,7 @@ export function drawNotation(c,width,pattern,{time=null,metrics=null,measure=1}=
     label(signature.numerator,left+36,61,'#e8edf6','center','bold 18px Segoe UI');label(signature.denominator,left+36,81,'#e8edf6','center','bold 18px Segoe UI');
     for(let beat=0;beat<signature.numerator;beat++){
       const beatLeft=notePosition(m,beat*perBeat-.35,total,measureWidth)-offset,beatRight=notePosition(m,(beat+1)*perBeat-.35,total,measureWidth)-offset;
-      c.fillStyle=beat%2===0?'#9feaaf0b':'#9feaaf05';c.fillRect(beatLeft,17,beatRight-beatLeft,137);line(beatLeft,18,beatLeft,154,'#94a1b733');
+      c.fillStyle=beat%2===0?'#0a84ff0b':'#0a84ff05';c.fillRect(beatLeft,17,beatRight-beatLeft,137);line(beatLeft,18,beatLeft,154,'#94a1b733');
       const notes=byBeat.get(`${m+1}/${beat+1}`)??[];
       for(let sub=0;sub<perBeat;sub++){
         const x=notePosition(m,beat*perBeat+sub,total,measureWidth)-offset;
@@ -53,6 +53,6 @@ export function drawNotation(c,width,pattern,{time=null,metrics=null,measure=1}=
       if(grid==='triplets'&&points.length>1)label('3',(points[0]+points.at(-1))/2,38,'#94a1b7','center','bold 11px Segoe UI');
     }
   }
-  if(playhead!=null){const x=playhead-offset;line(x,15,x,153,'#9feaaf',2);c.fillStyle='#9feaaf';c.beginPath();c.moveTo(x-6,14);c.lineTo(x+6,14);c.lineTo(x,23);c.closePath();c.fill();}
+  if(playhead!=null){const x=playhead-offset;line(x,15,x,153,'#0a84ff',2);c.fillStyle='#0a84ff';c.beginPath();c.moveTo(x-6,14);c.lineTo(x+6,14);c.lineTo(x,23);c.closePath();c.fill();}
   label('Cymbal × · snare center · kick low · green correct · orange missed · red wrong · purple ambiguous',14,186,'#94a1b7','left','11px Segoe UI');c.lineWidth=1;c.textAlign='left';
 }
