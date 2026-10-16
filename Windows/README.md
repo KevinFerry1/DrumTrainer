@@ -12,6 +12,14 @@ No Xcode, Python, Node.js, paid account, installation, or administrator access i
 
 The dark interface follows the native Mac drum app: **Live Monitor**, **Calibration**, **Practice**, **History**, and **Settings**. Practice has the same exercise setup rows, custom-measure/sequence modes, score, and result review. Shared sound/device controls stay synchronized between tabs. Auto go is under Settings.
 
+## Launch the latest code after updates
+
+Double-click **Run latest DrumTrainer.cmd** in this project or the portable app folder. It opens the current code directly and reuses the local server when it belongs to this folder. No rebuild or ZIP extraction is needed after edits here. An older copy serving from another folder must be closed first so it cannot silently show an outdated version.
+
+Run **Create DrumTrainer Shortcut.cmd** once to put **DrumTrainer** on the desktop with **Ctrl+Alt+R** as its launch shortcut. Once the app is open, **Ctrl+R** reloads code changes. Finish or cancel the current attempt before reloading. Always use the same browser to keep your saved practice database. Updating the local source does not automatically download GitHub changes; changes made here are available immediately.
+
+The one-click launcher keeps its small local server in the background. The original **Start DrumTrainer.cmd** remains available if you prefer a visible server window or need to diagnose a startup error.
+
 ## Move your Mac data
 
 The transfer ZIP may include **Mac-practice-backup.json**, copied from the Mac app’s saved practice archive. In the Windows app choose **History → Import JSON** and select that file. Alternatively, use **History → Export JSON** in the Mac app before returning it, then import the exported file on Windows.

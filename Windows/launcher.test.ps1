@@ -32,6 +32,45 @@ try {
   }
   $head = Invoke-WebRequest "$url/index.html" -Method Head -UseBasicParsing
   if ($head.StatusCode -ne 200) { throw 'HEAD request failed.' }
+  $info = (Invoke-WebRequest "$url/launcher.json" -UseBasicParsing).Content | ConvertFrom-Json
+  if ($info.app -ne 'DrumTrainerWindows' -or $info.processID -ne $child.Id -or $info.rootID.Length -ne 64) { throw 'Launcher identity is invalid.' }
+  $latest = Join-Path $PSScriptRoot 'Run-Latest.ps1'
+  & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $latest -NoBrowser -Port $port
+  if ($LASTEXITCODE -ne 0) { throw 'Run latest could not reuse the source server.' }
+  $after = (Invoke-WebRequest "$url/launcher.json" -UseBasicParsing).Content | ConvertFrom-Json
+  if ($after.processID -ne $info.processID) { throw 'Run latest started a duplicate server.' }
+  $shortcutScript = Join-Path $PSScriptRoot 'New-Shortcut.ps1'
+  $shortcutFolder = Join-Path ([System.IO.Path]::GetTempPath()) "DrumTrainer-shortcut-$testID"
+  [void](New-Item -ItemType Directory -Path $shortcutFolder)
+  try {
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $shortcutScript -Destination $shortcutFolder
+    if ($LASTEXITCODE -ne 0) { throw 'Desktop shortcut creation failed.' }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut((Join-Path $shortcutFolder 'DrumTrainer.lnk'))
+    if ($shortcut.TargetPath -ne (Join-Path $PSScriptRoot 'Run latest DrumTrainer.cmd') -or $shortcut.Hotkey -notin @('Ctrl+Alt+R','Alt+Ctrl+R')) { throw 'Shortcut does not launch the source app with Ctrl+Alt+R.' }
+  } finally {
+    Remove-Item -LiteralPath (Join-Path $shortcutFolder 'DrumTrainer.lnk') -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $shortcutFolder -ErrorAction SilentlyContinue
+  }
+  # A fresh launch must return promptly while keeping its own server alive.
+  $freshProbe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+  $freshProbe.Start(); $freshPort = $freshProbe.LocalEndpoint.Port; $freshProbe.Stop()
+  $freshInfo = $null
+  try {
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $latest -NoBrowser -Port $freshPort
+    if ($LASTEXITCODE -ne 0) { throw 'Run latest could not start a fresh server.' }
+    $freshInfo = (Invoke-WebRequest "http://127.0.0.1:$freshPort/launcher.json" -UseBasicParsing).Content | ConvertFrom-Json
+    if ($freshInfo.app -ne 'DrumTrainerWindows' -or $freshInfo.rootID -ne $info.rootID) { throw 'Fresh source server identity is invalid.' }
+  } finally {
+    if ($freshInfo.app -eq 'DrumTrainerWindows' -and $freshInfo.rootID -eq $info.rootID) { Stop-Process -Id $freshInfo.processID -ErrorAction SilentlyContinue }
+  }
+  # An occupied address must be left alone, rather than launching a stale copy.
+  $foreignServer = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+  $foreignServer.Start()
+  try {
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $latest -NoBrowser -Port $foreignServer.LocalEndpoint.Port
+    if ($LASTEXITCODE -ne 1 -or -not $foreignServer.Server.IsBound) { throw 'An unrelated server was not preserved.' }
+  } finally { $foreignServer.Stop() }
   foreach ($route in @('/Mac-practice-backup.json','/README.md','/../README.md','/Mac-recordings/take.m4a')) {
     $status = 0
     try { $result = Invoke-WebRequest "$url$route" -UseBasicParsing; $status = [int]$result.StatusCode }

@@ -2,6 +2,10 @@
 param([switch]$NoBrowser, [ValidateRange(1024,65535)][int]$Port = 8765)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+$hasher = [System.Security.Cryptography.SHA256]::Create()
+try { $rootID = [BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes([System.IO.Path]::GetFullPath($root).TrimEnd('\').ToLowerInvariant()))).Replace('-','') }
+finally { $hasher.Dispose() }
+$launcherInfo = @{ app = 'DrumTrainerWindows'; rootID = $rootID; processID = $PID } | ConvertTo-Json -Compress
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
 $files = @{
   '/' = @('index.html', 'text/html; charset=utf-8')
@@ -76,6 +80,9 @@ try {
       if ($method -ne 'GET' -and $method -ne 'HEAD') {
         $status = '405 Method Not Allowed'
         $body = [System.Text.Encoding]::UTF8.GetBytes('Only local static files are served.')
+      } elseif ($route -eq '/launcher.json') {
+        $mime = 'application/json; charset=utf-8'
+        $body = [System.Text.Encoding]::UTF8.GetBytes($launcherInfo)
       } elseif ($files.ContainsKey($route)) {
         $entry = $files[$route]
         $mime = $entry[1]
