@@ -10,7 +10,8 @@ const require=createRequire(path.join(process.env.DRUMTRAINER_TEST_MODULES,'pack
 const {JSDOM}=require('jsdom'),mode=process.argv[2]??'builtIn';
 const dom=new JSDOM(fs.readFileSync(new URL('../index.html',import.meta.url),'utf8'),{url:'http://127.0.0.1:8765'});
 const {window}=dom,{document}=window,$=id=>document.getElementById(id);
-for(const key of ['window','document','navigator','localStorage','Option','Event'])globalThis[key]=window[key];
+// Newer Node versions expose navigator through a getter; install the test window explicitly.
+for(const key of ['window','document','navigator','localStorage','Option','Event'])Object.defineProperty(globalThis,key,{value:window[key],writable:true,configurable:true});
 window.HTMLMediaElement.prototype.pause=()=>{};
 window.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
 window.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new window.Event('close'));};
