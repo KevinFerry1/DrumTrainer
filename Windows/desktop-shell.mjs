@@ -1,4 +1,5 @@
 // The desktop arrangement follows the native SwiftUI tabs and form layout.
+import {historySessionClean} from './results-view.mjs';
 export const desktopTabs=['live','calibration','practice','history','settings'];
 // Both migrated summaries and full Windows sessions feed the native-style history view.
 export function historyValues(entries){
@@ -7,7 +8,7 @@ export function historyValues(entries){
     error:summaryOnly?s.medianAbsoluteErrorMilliseconds:s.metrics.error,
     spread:summaryOnly?s.medianLimbSpreadMilliseconds:s.metrics.spread,
     duration:summaryOnly?(s.durationSeconds??0):(s.pattern?.duration??0)/1000,
-    clean:summaryOnly?s.recall>=.95&&(s.latencyAdjustedMedianErrorMilliseconds??s.medianAbsoluteErrorMilliseconds??Infinity)<=25&&!s.droppedEventCount:s.metrics.clean
+    clean:historySessionClean({s,summaryOnly})
   })).sort((a,b)=>a.date-b.date);
 }
 export function initializeDesktopShell({onTabChange=()=>{},onPracticeType=()=>{},onReturnSetup=()=>{}}={}){

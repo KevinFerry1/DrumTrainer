@@ -1,7 +1,7 @@
 // Geometry and symbols follow PracticeScoreView / PracticeScoreTimeline.swift.
 const cymbals=new Set(['closedHiHat','openHiHat','pedalHiHat','ride','rideBell','crash1','crash2','china','splash']);
 const slots={eighths:2,sixteenths:4,triplets:3};
-const colors={correct:'#76db9b',missed:'#f6bd72',wrongVoice:'#f18b8b',ambiguous:'#c09bf2',extra:'#c09bf2'};
+const colors={correct:'#30d158',missed:'#ff9f0a',wrongVoice:'#ff453a',ambiguous:'#bf5af2',extra:'#bf5af2'};
 const indexCache=new WeakMap(),resultCache=new WeakMap();
 export function notePosition(measure,slot,slotsPerMeasure,measureWidth){return 48+measure*measureWidth+66+(slot+.35)/slotsPerMeasure*(measureWidth-84);}
 export function noteY(voice){return voice==='kick'?96:voice==='lowTom'?82:voice==='highTom'?62:cymbals.has(voice)?44:72;}
@@ -19,8 +19,8 @@ export function eventPosition(pattern,n,measureWidth){
 }
 function indices(pattern){let value=indexCache.get(pattern);if(!value){value=new Map();for(const n of pattern.notes){const key=`${n.measure}/${n.beat}`,list=value.get(key)??[];list.push(n);value.set(key,list);}indexCache.set(pattern,value);}return value;}
 function resultMaps(metrics){if(!metrics)return null;let value=resultCache.get(metrics);if(!value){value={notes:new Map((metrics.results??[]).map(r=>[r.expectedEventID??r.expected?.id,r.status??r.classification])),accent:new Map((metrics.accents?.results??[]).map(r=>[r.expectedEventID,r.classification])),ghost:new Map((metrics.ghosts?.results??[]).map(r=>[r.expectedEventID,r.classification]))};resultCache.set(metrics,value);}return value;}
-export function drawNotation(c,width,pattern,{time=null,metrics=null,measure=1}={}){
-  const measureWidth=Math.max(330,Math.min(460,width*.78)),contentWidth=58+measureWidth*pattern.measures,playhead=scorePosition(pattern,time,measureWidth),offset=playhead==null?Math.min(Math.max((measure-1)*measureWidth,0),Math.max(0,contentWidth-width)):Math.min(Math.max(playhead-width*.3,0),Math.max(0,contentWidth-width)),byBeat=indices(pattern),results=resultMaps(metrics);
+export function drawNotation(c,width,pattern,{time=null,metrics=null,measure=1,fixedMeasureWidth=null,compact=false,scrollOffset=null,gradeKicks=true}={}){
+  const measureWidth=fixedMeasureWidth??Math.max(330,Math.min(460,width*.78)),contentWidth=58+measureWidth*pattern.measures,playhead=scorePosition(pattern,time,measureWidth),offset=scrollOffset!=null?Math.min(Math.max(scrollOffset,0),Math.max(0,contentWidth-width)):playhead==null?Math.min(Math.max((measure-1)*measureWidth,0),Math.max(0,contentWidth-width)):Math.min(Math.max(playhead-width*.3,0),Math.max(0,contentWidth-width)),byBeat=indices(pattern),results=resultMaps(metrics);
   c.font='12px Segoe UI, system-ui';c.textBaseline='middle';
   const line=(x,y,x2,y2,color='#9eabc0',weight=1)=>{c.strokeStyle=color;c.lineWidth=weight;c.beginPath();c.moveTo(x,y);c.lineTo(x2,y2);c.stroke();};
   const label=(value,x,y,color='#94a1b7',align='center',font='12px Segoe UI, system-ui')=>{c.fillStyle=color;c.textAlign=align;c.font=font;c.fillText(value,x,y);};
@@ -43,7 +43,7 @@ export function drawNotation(c,width,pattern,{time=null,metrics=null,measure=1}=
       }
       const positions=[];
       for(const n of notes){
-        const x=eventPosition(pattern,n,measureWidth)-offset,y=noteY(n.voice),color=colors[results?.notes.get(n.id)]??'#e8edf6';positions.push(x);
+        const x=eventPosition(pattern,n,measureWidth)-offset,y=noteY(n.voice),color=n.voice==='kick'&&!gradeKicks?'#8e8e93':colors[results?.notes.get(n.id)]??'#e8edf6';positions.push(x);
         if(n.ghost){label('(',x-11,y,dynamicColor(results?.ghost.get(n.id)));label(')',x+11,y,dynamicColor(results?.ghost.get(n.id)));}
         if(cymbals.has(n.voice)){line(x-6,y-5,x+6,y+5,color,2);line(x-6,y+5,x+6,y-5,color,2);}else{c.fillStyle=color;c.beginPath();c.ellipse(x,y,7,4,0,0,2*Math.PI);c.fill();}
         line(x+6,y,x+6,43,color,1.6);if(n.accent)label('>',x,y-12,dynamicColor(results?.accent.get(n.id)));
@@ -54,5 +54,5 @@ export function drawNotation(c,width,pattern,{time=null,metrics=null,measure=1}=
     }
   }
   if(playhead!=null){const x=playhead-offset;line(x,15,x,153,'#0a84ff',2);c.fillStyle='#0a84ff';c.beginPath();c.moveTo(x-6,14);c.lineTo(x+6,14);c.lineTo(x,23);c.closePath();c.fill();}
-  label('Cymbal × · snare center · kick low · green correct · orange missed · red wrong · purple ambiguous',14,186,'#94a1b7','left','11px Segoe UI');c.lineWidth=1;c.textAlign='left';
+  if(!compact)label('Cymbal × · snare center · kick low · green correct · orange missed · red wrong · purple ambiguous',14,186,'#94a1b7','left','11px Segoe UI');c.lineWidth=1;c.textAlign='left';
 }

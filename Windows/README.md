@@ -12,6 +12,8 @@ No Xcode, Python, Node.js, paid account, installation, or administrator access i
 
 The dark interface follows the native Mac drum app: **Live Monitor**, **Calibration**, **Practice**, **History**, and **Settings**. Practice has the same exercise setup rows, custom-measure/sequence modes, score, and result review. Shared sound/device controls stay synchronized between tabs. Auto go is under Settings.
 
+History uses the native name/date, BPM, recall, and timing-error columns, with a green **Clean** checkmark seal for qualified sessions and **Needs work** for the others. Completed sessions follow the Mac result layout: Quick take, Performance score, compact recall/precision/timing cards, Hit breakdown, Timing details, Detailed timing timeline, Sequence review, Per-voice results, and Limb synchronization. Accent/ghost boxes and stable-bias guidance appear when applicable. The result spacing, card formatting, and conditional content are checked with artificial sessions against the Mac view definitions.
+
 ## Launch the latest code after updates
 
 Double-click **Run latest DrumTrainer.cmd** in this project or the portable app folder. It opens the current code directly and reuses the local server when it belongs to this folder. No rebuild or ZIP extraction is needed after edits here. An older copy serving from another folder must be closed first so it cannot silently show an outdated version.

@@ -26,7 +26,7 @@ try {
   }
   if (-not $ready) { throw "Local launcher did not become ready. Request: $lastRequestError. Output: $(Get-Content $stdout -Raw). Errors: $(Get-Content $stderr -Raw)" }
   if (-not $response.Content.Contains('DrumTrainer')) { throw 'Unexpected index document.' }
-  foreach ($file in @('app.mjs','desktop-shell.mjs','core.mjs','native-scoring.mjs','audio-core.mjs','kick-worklet.mjs')) {
+  foreach ($file in @('app.mjs','desktop-shell.mjs','results-view.mjs','core.mjs','native-scoring.mjs','audio-core.mjs','kick-worklet.mjs')) {
     $module = Invoke-WebRequest "$url/$file" -UseBasicParsing
     if ($module.StatusCode -ne 200 -or $module.Headers['Content-Type'] -notmatch 'text/javascript') { throw "Incorrect module response: $file" }
   }

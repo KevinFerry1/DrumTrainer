@@ -1,3 +1,4 @@
+import {renderSessionResult,drawResultScore,historySessionRow,historySessionClean,exerciseProgressTable} from './results-view.mjs';
 import {initializeDesktopShell,historyValues} from './desktop-shell.mjs';
 import {voices,gm,exercises,subdivisions,makePattern,score,median,importBackup} from './core.mjs';
 import {analyzeNoise,makeCalibrationProfile,CalibrationHitCollector,CrosstalkGuard,soundSimilarity} from './audio-core.mjs';
@@ -36,7 +37,7 @@ let activeRecorder = null, starting = null, finishing = false, finishGeneration 
 const soundBuffers = new Map(), kickVoices = Array(6).fill(null);
 const crosstalk = new CrosstalkGuard();
 const scheduled = new Set(), recent = [], lastKick = new Map();
-let draftRevision=0,liveSimulationTimer=null;
+let draftRevision=0,liveSimulationTimer=null,autoGoDeadline=0;
 let draft = {name:'My custom measure',subdivision:'sixteenths',hits:[]};
 let sequenceDraft = {name:'My sequence',subdivision:'sixteenths',hits:[],sequenceSteps:[],sequenceRepeats:1};
 const mergeByID = (old,added) => { const values=new Map(old.map(v=>[v.id,v])); added.forEach(v=>{if(!values.has(v.id))values.set(v.id,v);}); return [...values.values()]; };
@@ -461,8 +462,10 @@ function setRunning(active) {
   $('stop').disabled = !active; $('repeats').disabled = active || ($('practiceMode').value!=='song'&&!!selectedDefinition().sequenceSteps);
   $('exercise').disabled=active||$('practiceMode').value==='song';
   $('saveCalibration').disabled = active || !pendingProfile;
+  for(const id of ['saveSessionNotes','rescore','deleteSession','takeFile'])$(id).disabled=active||!currentResult||!!currentResult.demo||!!currentResult.experimental;
+  for(const id of ['downloadTake','deleteTake'])$(id).disabled=active||!displayedTake;
 }
-function clearAuto() { clearTimeout(autoTimer); autoTimer = null; }
+function clearAuto() { clearTimeout(autoTimer); autoTimer = null;autoGoDeadline=0;$('autoGoBanner').hidden=true; }
 function cancel(message) {
   finishGeneration++;pendingAlignment=null;$('alignmentReview').hidden=true;
   if(starting)starting.canceled=true;
@@ -569,6 +572,7 @@ async function finish() {
   if (!completed.demo&&!completed.external) {
     sessions.unshift(session);
     decision=recordProgress(progress,session,progressOptions);
+    if(generation===finishGeneration&&decision.message&&(progressOptions.ceiling||progressOptions.advance)){const target=progressOptions.ceiling?'ceilingMessage':'progressionMessage';text(target,decision.message);$(target).hidden=false;}
     if(generation===finishGeneration){$('bpm').value=decision.nextBPM;saveSettings();}
     await persist();renderHistory();renderProgressStatus();
   }
@@ -578,38 +582,23 @@ async function finish() {
   if ($('auto').checked && !completed.demo && !completed.external && desktop.activeTab==='practice' && !document.hidden && !decision.found) {
     const delay=Math.min(Math.max(Number($('autoDelay').value)||7,1),30);
     notice(`${decision.message??'Run saved.'} Next count-in starts in ${delay} seconds. Cancel pauses automatic repeats.`);
-    $('stop').disabled = false;
+    $('stop').disabled = false;autoGoDeadline=Date.now()+delay*1000;
     autoTimer = setTimeout(() => { $('stop').disabled = true; withError(() => begin())(); },delay*1000);
   }
   }finally{if(recorder?.id)await recorder.abort().catch(error=>text('recordStatus',error.message));finishing=false;setRunning(!!run||!!starting);if(autoTimer)$('stop').disabled=false;}
 }
 function showResult(s) {
+  const firstDisplay=$('result').hidden||currentResult?.id!==s.id;
   currentResult = s; $('result').hidden = false;desktop.sync();
   const m = s.metrics;
   if(m.accents==null)m.accents=evaluateDynamics('accent',s.pattern.notes,s.evidence,m.results??[]);
   if(m.ghosts==null)m.ghosts=evaluateDynamics('ghost',s.pattern.notes,s.evidence,m.results??[]);
-  text('resultTitle',`${s.experimental?'Experimental · ':s.demo ? 'Simulated · ':''}${m.clean ? 'Clean run':'Practice results'} · ${s.bpm} BPM`);
   loadSessionTake(s).catch(error=>text('takeInfo',`Could not load this take: ${error.message}`));
   $('sessionNotes').value=s.notes??'';$('sessionTags').value=(s.tags??[]).join(', ');
   for(const id of ['saveSessionNotes','rescore','deleteSession'])$(id).disabled=!!s.demo||!!s.experimental;
   text('sessionContext',`${s.source==='mac'?'Migrated Mac session':'Windows session'} · scoring version ${m.scoringVersion??1} · MIDI ${s.devices?.midi??'none'} · mic ${s.devices?.microphone??'none'} · output ${s.devices?.output??'default'}${s.rescoredAt?` · rescored ${new Date(s.rescoredAt).toLocaleString()}`:''}`);
-  const coaching=summarizePractice(s.pattern,m);text('coachingOverview',coaching.overview);text('coachingNext',coaching.nextStep);
-  $('metrics').replaceChildren();
-  for (const [value,label] of [[percent(m.recall),'Notes correct'],[ms(m.error),'Median timing error'],[ms(m.bias),'Timing bias · − early / + late'],[`${m.missed} / ${m.extra}`,'Missed / extra']]) {
-    const card = document.createElement('div'); card.className = 'metric';
-    const strong = document.createElement('strong'); strong.textContent = value;
-    const span = document.createElement('span'); span.textContent = label; card.append(strong,span); $('metrics').append(card);
-  }
-  const summary = document.createElement('p'); summary.className = 'hint';
-  summary.textContent = `Precision ${percent(m.precision)} · Wrong voice ${m.wrong} · Ambiguous ${m.ambiguous ?? 0} · Timing consistency ${ms(m.consistency)} · Simultaneous hit spread ${ms(m.spread)}${m.stableTiming ? ` · Steady shared bias: grading uses ${ms(m.stableTiming.adjustedMedianAbsoluteErrorMilliseconds)} centered error`:''}${s.options?.dropped ? ' · Interrupted / dropped evidence':''}`;
-  const table = document.createElement('table');
-  table.innerHTML = '<thead><tr><th>Voice</th><th>Correct / expected</th><th>Median error</th></tr></thead>';
-  for (const v of m.perVoice ?? []) {
-    const tr = document.createElement('tr');
-    for (const cell of [voices[v.voice] ?? v.voice,`${v.correct} / ${v.expected}`,ms(v.error)]) { const td = document.createElement('td'); td.textContent = cell; tr.append(td); }
-    table.append(tr);
-  }
-  $('voiceMetrics').replaceChildren(summary,table);ledgerLimit=200;renderLedger();
+  renderSessionResult(document,s,summarizePractice(s.pattern,m));ledgerLimit=200;renderLedger();desktop.sync();
+  if(firstDisplay&&desktop.activeTab==='practice')requestAnimationFrame(()=>{if($('result').parentElement===$('practiceContent'))window.scrollTo({top:0,behavior:'instant'});});
 }
 function renderLedger(){
   if(!currentResult)return;
@@ -658,24 +647,15 @@ function renderHistory() {
   renderHistoryOverview([...entries.values()]);
   const query=$('historySearch').value.trim().toLocaleLowerCase(),filter=$('historyFilter').value;
   const ordered=[...entries.values()].filter(({s,summaryOnly})=>{
-    const clean=summaryOnly?s.recall>=.95&&(s.latencyAdjustedMedianErrorMilliseconds??s.medianAbsoluteErrorMilliseconds??Infinity)<=25&&!s.droppedEventCount:s.metrics.clean;
+    const clean=historySessionClean({s,summaryOnly});
     const searchable=[s.name??s.exerciseName,s.notes??'',...(Array.isArray(s.tags)?s.tags:[])].join(' ').toLocaleLowerCase();
     return searchable.includes(query)&&(filter==='all'||(filter==='clean'?clean:!clean));
   }).sort((a,b)=>b.date-a.date);
   $('history').replaceChildren();$('restoreNative').hidden=!nativeArchives.length;
   if(!ordered.length){const p=document.createElement('p');p.className='empty';p.textContent=entries.size?'No sessions match this filter.':'Your completed runs will appear here.';$('history').append(p);}
-  for(const {s,date,summaryOnly}of ordered.slice(0,historyLimit)){
-    const row=document.createElement('div');row.className='history-row';const copy=document.createElement('div');copy.textContent=`${s.name??s.exerciseName} · ${s.bpm} BPM`;
-    const small=document.createElement('small');small.textContent=`${date.toLocaleString()} · ${percent(summaryOnly?s.recall:s.metrics.recall)} correct · ${ms(summaryOnly?s.medianAbsoluteErrorMilliseconds:s.metrics.error)}${summaryOnly||s.source==='mac'?' · Mac archive':''}${s.tags?.length?` · ${s.tags.join(', ')}`:''}`;copy.append(small);row.append(copy);
-    if(!summaryOnly){const button=document.createElement('button');button.className='secondary';button.textContent='Details';button.onclick=()=>showHistoryDetail(s);row.append(button);}
-    $('history').append(row);
-  }
+  for(const entry of ordered.slice(0,historyLimit))$('history').append(historySessionRow(document,entry,{onDetails:showHistoryDetail}));
   const p=document.createElement('p');p.className='hint';p.textContent=`Showing ${Math.min(historyLimit,ordered.length)} of ${ordered.length} sessions. Export includes saved sessions and original archives.`;$('history').append(p);$('historyMore').disabled=historyLimit>=ordered.length;
-  $('progressRecords').replaceChildren();
-  for(const record of progress.tempoProgressions.filter(p=>p.highestCleanBPM!=null)){
-    const p=document.createElement('p');p.className='hint';const ceiling=progress.ceilingRecords.find(c=>c.id===record.id);p.textContent=`${record.exerciseName}: best clean ${record.highestCleanBPM} BPM${ceiling?` · verified ceiling ${ceiling.highestVerifiedBPM} BPM`:''}`;$('progressRecords').append(p);
-  }
-  if(!$('progressRecords').children.length){const p=document.createElement('p');p.className='hint';p.textContent='Complete a clean run to set your first record.';$('progressRecords').append(p);}
+  $('progressRecords').replaceChildren(exerciseProgressTable(document,[...entries.values()],progress));
   desktop.sync();
 }
 $('historyMetric').onchange=renderHistory;
@@ -709,6 +689,8 @@ function renderEditor() {
 
 // Draw upcoming beats against a fixed playhead. UI refreshes never schedule audio or hits.
 function updateTransportStatus(){
+  $('autoGoBanner').hidden=!autoTimer;
+  if(autoTimer){const value=`Auto go · next round in ${Math.max(0,Math.ceil((autoGoDeadline-Date.now())/1000))}s`;if($('autoGoCountdown').textContent!==value)text('autoGoCountdown',value);}
   if(run?.waiting){text('phase','WAITING');text('position','Wait for Ready, then press Play in Songsterr.');}
   else if (run) {
     const relative = audibleTime()-run.start;
@@ -718,6 +700,7 @@ function updateTransportStatus(){
 }
 function draw() {
   updateTransportStatus();
+  drawResultScore(document,currentResult,window.devicePixelRatio||1);
   const canvas = $('score'), width = canvas.clientWidth, height = canvas.clientHeight, dpr = window.devicePixelRatio || 1;
   if (canvas.width !== Math.round(width*dpr) || canvas.height !== Math.round(height*dpr)) { canvas.width = Math.round(width*dpr); canvas.height = Math.round(height*dpr); }
   if(!width||!height){animation=requestAnimationFrame(draw);return;}
