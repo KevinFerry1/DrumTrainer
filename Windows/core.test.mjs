@@ -2,6 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {exercises,makePattern,score,TransientDetector,importBackup,validateDefinition} from './core.mjs';
 
+test('native sequence-review labels are present only for authored arrangements',()=>{
+  assert.equal(makePattern(exercises[0],120,4).measureLabels,null);
+  const measure={name:'Verse',subdivision:'eighths',hits:[{slot:0,voice:'kick'}]};
+  assert.equal(makePattern(measure,120,4).measureLabels,null);
+  const sequence={name:'Arrangement',subdivision:'eighths',hits:[],sequenceSteps:[{...measure,repeats:2}],sequenceRepeats:1};
+  assert.deepEqual(makePattern(sequence,120,4).measureLabels,['Verse','Verse']);
+});
+
 test('all native built-in note counts and subdivisions are preserved',() => {
   const counts = [8,16,12,4,12,12,12,8,12,13,26,14,24,24,16];
   assert.equal(exercises.length,15);

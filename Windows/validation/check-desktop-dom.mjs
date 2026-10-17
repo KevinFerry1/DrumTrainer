@@ -60,6 +60,7 @@ try{
   assert.equal($('hitBreakdown').querySelectorAll('.hit-count').length,5);
   assert.ok($('timingDetails').textContent.includes('Longest clean streak: 32'));
   assert.equal($('voiceMetrics').querySelectorAll('th').length,14);
+  assert.equal($('sequenceResults').hidden,true,'A repeated built-in exercise has no native Sequence review box');
   const expectedBoxes=['Performance score','Hit breakdown','Timing details','Detailed timing timeline','Sequence review','Per-voice results','Limb synchronization'];
   assert.deepEqual([...$('result').querySelectorAll(':scope>fieldset>legend')].map(n=>n.textContent),expectedBoxes);
   const richPattern=makePattern({name:'Dynamics and coordination',subdivision:'sixteenths',hits:[{slot:0,voice:'snare',accent:true},{slot:0,voice:'kick'},{slot:1,voice:'snare'},{slot:2,voice:'snare',ghost:true}]},120,4);
@@ -71,6 +72,10 @@ try{
   assert.equal($('dynamicsResults').querySelectorAll('.compact-metric').length,8);
   assert.equal($('limbResults').hidden,false);assert.equal($('limbMetrics').children.length,4);
   assert.equal($('limbOffsets').querySelectorAll('tbody tr').length,2);
+  const sequencePattern=makePattern(sequence,120,4);
+  renderSessionResult(document,{...rich,pattern:sequencePattern,metrics:score(sequencePattern,[])},summarizePractice(sequencePattern,score(sequencePattern,[])));
+  assert.equal($('sequenceResults').hidden,false);assert.equal($('sequenceReview').children.length,2);
+  renderSessionResult(document,rich,summarizePractice(rich.pattern,rich.metrics));
   // The performance score stays viewport-sized even for long imported songs.
   const labels=[];const context=new Proxy({fillText:(text)=>labels.push(text)},{get:(target,key)=>target[key]??(()=>{})});
   $('resultScore').getContext=()=>context;

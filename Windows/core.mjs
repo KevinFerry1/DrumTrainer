@@ -78,7 +78,7 @@ export function makePattern(definition, bpm, repeats, options = {}) {
   notes.sort((a,b) => a.time-b.time || (a.voice < b.voice ? -1:a.voice > b.voice ? 1:0));
   requireValid(notes.length <= 10000, 'Shorten this exercise to at most 10,000 notes.');
   const durationNanoseconds=Math.round(sequence.length*4*60000000000/bpm);
-  return {id:uid(),name:definition.name,bpm,beatMs,beatsPerMeasure:4,subdivision:definition.subdivision ?? sequence[0].subdivision,measures:sequence.length,duration:durationNanoseconds/1e6,durationNanoseconds,notes,measureSubdivisions:sequence.map(s => s.subdivision),measureLabels:sequence.map(s => s.name),measureStarts:Array.from({length:sequence.length+1},(_,i) => Math.round(i*4*60000000000/bpm)/1e6),referenceBeats:Array.from({length:sequence.length*4},(_,i) => ({time:Math.round(i*60000000000/bpm)/1e6,measure:Math.floor(i/4)+1,beat:i%4+1,isAccent:i%4===0}))};
+  return {id:uid(),name:definition.name,bpm,beatMs,beatsPerMeasure:4,subdivision:definition.subdivision ?? sequence[0].subdivision,measures:sequence.length,duration:durationNanoseconds/1e6,durationNanoseconds,notes,measureSubdivisions:sequence.map(s => s.subdivision),measureLabels:definition.sequenceSteps?sequence.map(s => s.name):null,measureStarts:Array.from({length:sequence.length+1},(_,i) => Math.round(i*4*60000000000/bpm)/1e6),referenceBeats:Array.from({length:sequence.length*4},(_,i) => ({time:Math.round(i*60000000000/bpm)/1e6,measure:Math.floor(i/4)+1,beat:i%4+1,isAccent:i%4===0}))};
 }
 
 export const median = values => {
