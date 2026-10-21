@@ -1,0 +1,20 @@
+name: Beta feedback or bug report
+description: Tell us what happened while using DrumTrainer.
+body:
+  - type: markdown
+    attributes:
+      value: "This report is public. Remove personal information from text, screenshots, recordings, and backups before sharing."
+  - type: input
+    id: setup
+    attributes:
+      label: Computer and drum setup
+      description: Operating system/version, kit/module, MIDI connection, and audio input/output devices.
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: What happened?
+      description: Steps to reproduce, expected behavior, and actual behavior. For timing concerns, include calibration context and whether the issue repeats at a slower tempo.
+    validations:
+      required: true
