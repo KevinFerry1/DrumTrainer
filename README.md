@@ -29,7 +29,7 @@ Validation includes Swift reference fixtures for the Windows scoring and audio p
 
 ## Privacy and feedback
 
-Sessions and optional recordings stay on the user's computer. The practice coach runs locally without an API key or paid AI service. There is no app analytics or cloud sync. Export backups regularly, especially before updates or clearing browser data.
+Sessions and optional recordings stay on the user's computer. The practice coach runs locally without an API key or paid service. There is no app analytics or cloud sync. Export backups regularly, especially before updates or clearing browser data.
 
 GitHub hosts this website and the downloads. Issues and attachments submitted here are public. Remove personal information and share only data you intend to publish.
 
