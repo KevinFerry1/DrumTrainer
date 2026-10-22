@@ -33,6 +33,6 @@ Mac and Windows differ in audio routing, channel access, and limiter implementat
 
 ## Feedback
 
-Report issues at https://github.com/KevinFerry1/DrumTrainer-Website/issues/new. Include your OS, kit/module, connection type, input/output devices, steps to reproduce, and the expected and actual result. For timing concerns, include calibration context and whether the issue repeats at a slower tempo. Share only data you intend to make public.
+Report issues at https://github.com/KevinFerry1/DrumTrainer/issues/new. Include your OS, kit/module, connection type, input/output devices, steps to reproduce, and the expected and actual result. For timing concerns, include calibration context and whether the issue repeats at a slower tempo. Share only data you intend to make public.
 
 `SHA256SUMS.txt` accompanies the downloads so their integrity can be checked.

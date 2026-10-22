@@ -2,7 +2,7 @@
 
 Deliberate drum practice for Mac and Windows: timing, dynamics, local session history, and feedback grounded in saved practice evidence.
 
-**[Download the free desktop beta](https://kevinferry1.github.io/DrumTrainer-Website/#download)** · [Setup and release notes](RELEASE-NOTES.md) · [Report a problem](https://github.com/KevinFerry1/DrumTrainer-Website/issues/new/choose)
+**[Download the free desktop beta](https://kevinferry1.github.io/DrumTrainer/#download)** · [Setup and release notes](RELEASE-NOTES.md) · [Report a problem](https://github.com/KevinFerry1/DrumTrainer/issues/new/choose)
 
 The beta is free, with no account, payment, or expiry. Mac requires macOS 15 or later; the beta is not Apple-notarized. Windows requires Windows 10 or 11 and current Edge or Chrome. The Mac ZIP includes Apple silicon and Intel code. Extract the Windows ZIP before opening `Start DrumTrainer.cmd`.
 
